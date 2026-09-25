@@ -72,6 +72,8 @@ class OledDisplay {
       snprintf(out, len, "E-STOP: close it, reset");
     } else if (s.faultFlags & arm::kFaultEStopOpen) {
       snprintf(out, len, "E-STOP OPEN");
+    } else if (s.state == arm::State::SpeedTest) {
+      snprintf(out, len, "Speed A%d: %ld st/s", s.speedTestAxis, (long)s.speedTestStepsPerSec);
     } else if (s.state == arm::State::Homing) {
       snprintf(out, len, "Homing A%d: %s", s.homingAxis, Homing::phaseName(s.homingPhase));
     } else if (s.faultFlags & arm::kFaultHomingFailed) {

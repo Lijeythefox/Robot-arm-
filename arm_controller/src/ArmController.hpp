@@ -27,6 +27,13 @@ class ArmController {
   }
 
   void loopOnce() {
+    if (Axis::kHardwareStepping) {
+      // Steps come from hardware; just run the control tick and let other core-1 work run.
+      tick(millis());
+      vTaskDelay(pdMS_TO_TICKS(CONTROL_TICK_MS));
+      return;
+    }
+    // AccelStepper: poll the steppers as fast as possible between ticks.
     Axis::runAll();
     uint32_t nowUs = micros();
     if (nowUs - _lastTickUs >= CONTROL_TICK_MS * 1000UL) {
@@ -47,6 +54,28 @@ class ArmController {
       {AXIS_5_VEL_MAX, AXIS_5_ACC_MAX, AXIS_5_UNHOMED_VEL_MAX, AXIS_5_UNHOMED_ACC_MAX},
       {AXIS_6_VEL_MAX, AXIS_6_ACC_MAX, AXIS_6_UNHOMED_VEL_MAX, AXIS_6_UNHOMED_ACC_MAX},
   };
+
+  struct SpeedTestParams {
+    float maxSpeed, accel, amplitudeDeg;
+  };
+  static constexpr SpeedTestParams kSpeedTest[arm::kNumAxes] = {
+      {AXIS_1_SPEED_TEST_MAX, AXIS_1_SPEED_TEST_ACCEL, AXIS_1_SPEED_TEST_AMPLITUDE_DEG},
+      {AXIS_2_SPEED_TEST_MAX, AXIS_2_SPEED_TEST_ACCEL, AXIS_2_SPEED_TEST_AMPLITUDE_DEG},
+      {AXIS_3_SPEED_TEST_MAX, AXIS_3_SPEED_TEST_ACCEL, AXIS_3_SPEED_TEST_AMPLITUDE_DEG},
+      {AXIS_4_SPEED_TEST_MAX, AXIS_4_SPEED_TEST_ACCEL, AXIS_4_SPEED_TEST_AMPLITUDE_DEG},
+      {AXIS_5_SPEED_TEST_MAX, AXIS_5_SPEED_TEST_ACCEL, AXIS_5_SPEED_TEST_AMPLITUDE_DEG},
+      {AXIS_6_SPEED_TEST_MAX, AXIS_6_SPEED_TEST_ACCEL, AXIS_6_SPEED_TEST_AMPLITUDE_DEG},
+  };
+
+  // Speed test: oscillate between _st.from and _st.to, faster after every round trip.
+  struct SpeedTestRun {
+    uint8_t axis = 0;
+    float speed = 0, maxSpeed = 0, increment = 0, accel = 0;
+    double from = 0, to = 0;
+    uint8_t leg = 0;        // 0 = outbound, 1 = returning
+    float peak = 0;         // highest speed actually reached in this round trip
+    bool pendingStart = false;
+  } _st;
 
   Endstops _endstops;
   uint8_t _homedMask = 0;
@@ -88,6 +117,7 @@ class ArmController {
     handleSetpoints(now);
     enforceEndstops();
     runHoming(now);
+    runSpeedTest(now);
     updateSpeedLimits();
     applyPendingTargets(now);
     manageDriverSleep(now);
@@ -164,6 +194,7 @@ class ArmController {
     for (Axis* a : Axis::axisList) a->hardStop();
     clearPendingTargets();
     if (_homing.active()) _homing.abort(reason);
+    if (_state == arm::State::SpeedTest) endSpeedTest(reason);
     digitalWrite(ENABLE_ALL, LOW);
     _driversEnabled = false;
     _estopLatched = true;
@@ -204,7 +235,8 @@ class ArmController {
 
   // Homed axes get the full limits, unhomed axes the conservative ones.
   void updateSpeedLimits() {
-    if (_homedMask == _appliedHomedMask || _homing.active()) return;
+    if (_homedMask == _appliedHomedMask || _homing.active() || _state == arm::State::SpeedTest)
+      return;
     for (int n = 1; n <= arm::kNumAxes; n++) {
       const Limits& l = kLimits[n - 1];
       if (homed(n)) axis(n).setSpeedLimits(l.vel, l.acc);
@@ -262,7 +294,8 @@ class ArmController {
   // Homing
   // ---------------------------------------------------------------------------------------
   arm::CommandResult startHoming(const uint8_t* axes, int count, uint32_t now) {
-    if (_state == arm::State::Homing || _estopLatched) return arm::CommandResult::Rejected;
+    if (_state == arm::State::Homing || _state == arm::State::SpeedTest || _estopLatched)
+      return arm::CommandResult::Rejected;
     for (Axis* a : Axis::axisList) a->stop();
     clearPendingTargets();
     enableDrivers(now);
@@ -307,6 +340,106 @@ class ArmController {
   }
 
   // ---------------------------------------------------------------------------------------
+  // Speed test
+  // ---------------------------------------------------------------------------------------
+  arm::CommandResult startSpeedTest(const MotionCommand& cmd, uint32_t now) {
+    int n = cmd.axis;
+    if (n < 1 || n > arm::kNumAxes) return arm::CommandResult::BadArgument;
+    if (_estopLatched || (_state != arm::State::Ready && _state != arm::State::Disabled))
+      return arm::CommandResult::Rejected;
+    const SpeedTestParams& p = kSpeedTest[n - 1];
+    Axis& a = axis(n);
+
+    // Prefer moving away from the endstop. Once homed, stay inside the soft limits.
+    double pos = a.getPosition();
+    double amp = p.amplitudeDeg;
+    int dir = _endstops.enabled(n) ? -_endstops.homeDir(n) : 1;
+    if (homed(n)) {
+      double room = dir > 0 ? a.maxPosition() - pos : pos - a.minPosition();
+      double roomOther = dir > 0 ? pos - a.minPosition() : a.maxPosition() - pos;
+      if (room < amp && roomOther > room) {
+        dir = -dir;
+        room = roomOther;
+      }
+      amp = min(amp, room);
+      if (amp < 5) {
+        shared::logEvent("speed test: A%d has less than 5 deg of room inside its soft limits", n);
+        return arm::CommandResult::Rejected;
+      }
+    }
+
+    _st = SpeedTestRun();
+    _st.axis = n;
+    _st.speed = cmd.param[0] > 0 ? cmd.param[0] : SPEED_TEST_START_STEPS_S;
+    _st.maxSpeed = min((float)(cmd.param[1] > 0 ? cmd.param[1] : p.maxSpeed), (float)SPEED_TEST_ABS_MAX_STEPS_S);
+    _st.increment = cmd.param[2] > 0 ? cmd.param[2] : SPEED_TEST_INCREMENT_STEPS_S;
+    _st.accel = p.accel;
+    _st.from = pos;
+    _st.to = pos + dir * amp;
+    _st.pendingStart = true;
+
+    for (Axis* ax : Axis::axisList) ax->stop();
+    clearPendingTargets();
+    enableDrivers(now);
+    _state = arm::State::SpeedTest;
+    shared::logEvent("speed test A%d: %.0f -> %.0f steps/s, +%.0f per round trip, %.1f deg %s, "
+                     "accel %.0f. 'stop' ends it.",
+                     n, _st.speed, _st.maxSpeed, _st.increment, amp, dir > 0 ? "up" : "down", _st.accel);
+    return arm::CommandResult::Accepted;
+  }
+
+  void runSpeedTest(uint32_t now) {
+    if (_state != arm::State::SpeedTest || !driversAwake(now)) return;
+    Axis& a = axis(_st.axis);
+    if (_st.pendingStart) {
+      for (Axis* ax : Axis::axisList)
+        if (ax->isRunning()) return;
+      _st.pendingStart = false;
+      a.setSpeedLimits(_st.speed, _st.accel);
+      a.moveToPositionUnlimited(_st.to);
+      return;
+    }
+    if (_endstops.triggered(_st.axis) && a.directionOfTravel() == _endstops.homeDir(_st.axis)) {
+      endSpeedTest("endstop triggered");
+      return;
+    }
+    _st.peak = max(_st.peak, fabsf(a.currentSpeed()));
+    if (a.isRunning()) return;
+
+    if (_st.leg == 0) {
+      _st.leg = 1;
+      a.moveToPositionUnlimited(_st.from);
+      return;
+    }
+    // Round trip done at this speed.
+    double degPerSec = _st.speed / a.stepsPerDegree();
+    double rpm = _st.speed / a.stepsPerMotorRev() * 60.0;
+    shared::logEvent("A%d %.0f steps/s = %.1f joint deg/s = %.0f motor rpm (peak reached %.0f)%s",
+                     _st.axis, _st.speed, degPerSec, rpm, _st.peak,
+                     _st.peak < 0.95f * _st.speed ? " - too little travel/accel to reach it" : "");
+    _st.speed += _st.increment;
+    if (_st.speed > _st.maxSpeed) {
+      endSpeedTest("reached the configured maximum");
+      return;
+    }
+    _st.leg = 0;
+    _st.peak = 0;
+    a.setSpeedLimits(_st.speed, _st.accel);
+    a.moveToPositionUnlimited(_st.to);
+  }
+
+  void endSpeedTest(const char* reason) {
+    Axis& a = axis(_st.axis);
+    a.stop();
+    shared::logEvent("speed test A%d ended (%s) at %.0f steps/s. The axis may have lost steps: "
+                     "re-home it.", _st.axis, reason, _st.speed);
+    _homedMask &= ~(1 << (_st.axis - 1));
+    _appliedHomedMask = 0xFF;  // restore normal limits
+    _state = arm::State::Ready;
+    _st.axis = 0;
+  }
+
+  // ---------------------------------------------------------------------------------------
   // Setpoints from the PC (legacy ROS2 stream or tools with kExtSetpointsValid)
   // ---------------------------------------------------------------------------------------
   void handleSetpoints(uint32_t now) {
@@ -318,7 +451,7 @@ class ArmController {
         _commTimedOut = false;
         shared::logEvent("setpoint stream resumed");
       }
-      if (_active && _state != arm::State::Homing && !_estopLatched) followSetpoints(msg, now);
+      if (_active && _state == arm::State::Ready) followSetpoints(msg, now);
     }
 
     if (COMM_TIMEOUT_MS > 0 && _active && _lastSetpointMs != 0 && !_commTimedOut &&
@@ -364,7 +497,7 @@ class ArmController {
 
   arm::CommandResult execute(const MotionCommand& cmd, uint32_t now) {
     bool axisValid = cmd.axis >= 1 && cmd.axis <= arm::kNumAxes;
-    bool busy = _state == arm::State::Homing || _estopLatched;
+    bool busy = _state == arm::State::Homing || _state == arm::State::SpeedTest || _estopLatched;
     switch (cmd.type) {
       case arm::Command::Reset:
         return resetEStop(now);
@@ -372,10 +505,14 @@ class ArmController {
       case arm::Command::Stop:
         if (_homing.active()) _homing.abort("stop command");
         if (_state == arm::State::Homing) finishHoming(true);
+        if (_state == arm::State::SpeedTest) endSpeedTest("stopped by user");
         for (Axis* a : Axis::axisList) a->stop();
         clearPendingTargets();
         shared::logEvent("stop");
         return arm::CommandResult::Accepted;
+
+      case arm::Command::SpeedTest:
+        return startSpeedTest(cmd, now);
 
       case arm::Command::HomeAll: {
         const uint8_t order[] = HOMING_ORDER;
@@ -424,6 +561,7 @@ class ArmController {
 
       case arm::Command::DisableDrivers:
         if (_homing.active()) _homing.abort("drivers disabled");
+        if (_state == arm::State::SpeedTest) endSpeedTest("drivers disabled");
         disableDrivers();
         shared::logEvent("drivers disabled");
         return arm::CommandResult::Accepted;
@@ -453,6 +591,10 @@ class ArmController {
     if (_state == arm::State::Homing || _homingFailed) {
       s.homingAxis = _homingReportAxis;
       s.homingPhase = (uint8_t)_homing.phase();
+    }
+    if (_state == arm::State::SpeedTest) {
+      s.speedTestAxis = _st.axis;
+      s.speedTestStepsPerSec = (int32_t)_st.speed;
     }
     s.lastCommandSeq = _lastCommandSeq;
     s.lastCommandResult = _lastCommandResult;

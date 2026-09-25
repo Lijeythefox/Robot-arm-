@@ -52,6 +52,7 @@ class SerialConsole {
         "  home <axis>         home one axis\n"
         "  sethome <axis> <deg> declare the current position of an axis as <deg>, homed\n"
         "  sethome all         declare every axis homed at its current position\n"
+        "  speedtest <axis> [start max increment]  ramp one axis up (steps/s) until 'stop'\n"
         "  stop                decelerate all axes to a stop\n"
         "  reset               clear a latched E-stop (E-stop must be closed) / clear faults\n"
         "  help");
@@ -95,6 +96,10 @@ class SerialConsole {
       send(arm::Command::DisableDrivers);
     } else if (cmd == "stop" || cmd == "s") {
       send(arm::Command::Stop);
+    } else if (cmd == "speedtest" && (argc == 2 || argc == 5)) {
+      int32_t p0 = argc == 5 ? atol(argv[2]) : 0, p1 = argc == 5 ? atol(argv[3]) : 0,
+              p2 = argc == 5 ? atol(argv[4]) : 0;
+      send(arm::Command::SpeedTest, atoi(argv[1]), p0, p1, p2);
     } else if (cmd == "reset") {
       send(arm::Command::Reset);
     } else if (cmd == "home" && argc == 1) {

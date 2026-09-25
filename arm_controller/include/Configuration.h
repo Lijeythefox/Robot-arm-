@@ -25,8 +25,14 @@
 
 // ============================================================================================
 // Axes. STEP/DIR pins, gearing and directions are unchanged from the original firmware and
-// the v5 board. Speed limits apply once an axis is homed; the UNHOMED limits (the original
-// values) apply before that.
+// the v5 board. VEL_MAX / ACC_MAX apply once an axis is homed; the UNHOMED limits (the
+// original firmware's values) apply before that.
+//
+// The homed limits start at 2x the original. At 36 V the motors can go much faster: find each
+// axis' real limit with the speed test (see README), then set VEL_MAX to ~70% of the speed at
+// which it stalled.
+//   joint deg/s = steps/s / (STEPS_PER_REV * MICROSTEPS * GEARING / 360)
+//   axes 1-3: 170.7 steps per joint degree at 1/8, axes 4-6: 40.96
 // ============================================================================================
 
 // Axis 1 uses a DRV8825 Driver, NEMA 17
@@ -37,8 +43,8 @@
 #define AXIS_1_MICROSTEPS 8   // must match DIP switch SW1: M0 ON, M1 ON, M2 OFF = 1/8
 #define AXIS_1_POS_MIN -135
 #define AXIS_1_POS_MAX 135
-#define AXIS_1_VEL_MAX 1000
-#define AXIS_1_ACC_MAX 1000
+#define AXIS_1_VEL_MAX 2000
+#define AXIS_1_ACC_MAX 2000
 #define AXIS_1_UNHOMED_VEL_MAX 1000
 #define AXIS_1_UNHOMED_ACC_MAX 1000
 #define AXIS_1_INVERT_DIRECTION false     // to match axis rotation direction with simulation rotation direction
@@ -51,8 +57,8 @@
 #define AXIS_2_MICROSTEPS 8
 #define AXIS_2_POS_MIN -120
 #define AXIS_2_POS_MAX 120
-#define AXIS_2_VEL_MAX 1000
-#define AXIS_2_ACC_MAX 1000
+#define AXIS_2_VEL_MAX 2000
+#define AXIS_2_ACC_MAX 2000
 #define AXIS_2_UNHOMED_VEL_MAX 1000
 #define AXIS_2_UNHOMED_ACC_MAX 1000
 #define AXIS_2_INVERT_DIRECTION false
@@ -65,8 +71,8 @@
 #define AXIS_3_MICROSTEPS 8
 #define AXIS_3_POS_MIN -150
 #define AXIS_3_POS_MAX 150
-#define AXIS_3_VEL_MAX 1000
-#define AXIS_3_ACC_MAX 1000
+#define AXIS_3_VEL_MAX 2000
+#define AXIS_3_ACC_MAX 2000
 #define AXIS_3_UNHOMED_VEL_MAX 1000
 #define AXIS_3_UNHOMED_ACC_MAX 1000
 #define AXIS_3_INVERT_DIRECTION true
@@ -79,8 +85,8 @@
 #define AXIS_4_MICROSTEPS 8
 #define AXIS_4_POS_MIN -120
 #define AXIS_4_POS_MAX 120
-#define AXIS_4_VEL_MAX 400
-#define AXIS_4_ACC_MAX 800
+#define AXIS_4_VEL_MAX 800
+#define AXIS_4_ACC_MAX 1600
 #define AXIS_4_UNHOMED_VEL_MAX 400
 #define AXIS_4_UNHOMED_ACC_MAX 800
 #define AXIS_4_INVERT_DIRECTION true
@@ -93,8 +99,8 @@
 #define AXIS_5_MICROSTEPS 8
 #define AXIS_5_POS_MIN -120
 #define AXIS_5_POS_MAX 120
-#define AXIS_5_VEL_MAX 400
-#define AXIS_5_ACC_MAX 800
+#define AXIS_5_VEL_MAX 800
+#define AXIS_5_ACC_MAX 1600
 #define AXIS_5_UNHOMED_VEL_MAX 400
 #define AXIS_5_UNHOMED_ACC_MAX 800
 #define AXIS_5_INVERT_DIRECTION true
@@ -107,11 +113,40 @@
 #define AXIS_6_MICROSTEPS 8
 #define AXIS_6_POS_MIN -175
 #define AXIS_6_POS_MAX 175
-#define AXIS_6_VEL_MAX 400
-#define AXIS_6_ACC_MAX 800
+#define AXIS_6_VEL_MAX 800
+#define AXIS_6_ACC_MAX 1600
 #define AXIS_6_UNHOMED_VEL_MAX 400
 #define AXIS_6_UNHOMED_ACC_MAX 800
 #define AXIS_6_INVERT_DIRECTION true
+
+// ============================================================================================
+// Speed test (serial "speedtest <axis>"): the axis moves back and forth over AMPLITUDE_DEG,
+// starting at SPEED_TEST_START_STEPS_S and adding SPEED_TEST_INCREMENT_STEPS_S after every
+// round trip, until SPEED_TEST_MAX, "stop", an endstop or the E-stop. The last speed printed
+// before the motor stalls is the limit. Stalls cannot be detected (no encoders), so the axis
+// is marked un-homed afterwards.
+// ============================================================================================
+#define SPEED_TEST_START_STEPS_S 500
+#define SPEED_TEST_INCREMENT_STEPS_S 500
+#define SPEED_TEST_ABS_MAX_STEPS_S 100000  // hard cap; DRV8825 max is 250 kHz
+#define AXIS_1_SPEED_TEST_MAX 32000        // 1200 motor rpm at 1/8
+#define AXIS_1_SPEED_TEST_ACCEL 20000
+#define AXIS_1_SPEED_TEST_AMPLITUDE_DEG 45
+#define AXIS_2_SPEED_TEST_MAX 32000
+#define AXIS_2_SPEED_TEST_ACCEL 20000
+#define AXIS_2_SPEED_TEST_AMPLITUDE_DEG 45
+#define AXIS_3_SPEED_TEST_MAX 32000
+#define AXIS_3_SPEED_TEST_ACCEL 20000
+#define AXIS_3_SPEED_TEST_AMPLITUDE_DEG 45
+#define AXIS_4_SPEED_TEST_MAX 16000        // 2500 motor rpm at 1/8 (48-step motor)
+#define AXIS_4_SPEED_TEST_ACCEL 10000
+#define AXIS_4_SPEED_TEST_AMPLITUDE_DEG 45
+#define AXIS_5_SPEED_TEST_MAX 16000
+#define AXIS_5_SPEED_TEST_ACCEL 10000
+#define AXIS_5_SPEED_TEST_AMPLITUDE_DEG 45
+#define AXIS_6_SPEED_TEST_MAX 16000
+#define AXIS_6_SPEED_TEST_ACCEL 10000
+#define AXIS_6_SPEED_TEST_AMPLITUDE_DEG 45
 
 // ============================================================================================
 // Driver enable / E-stop.
