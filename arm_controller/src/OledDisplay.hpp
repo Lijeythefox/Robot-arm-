@@ -66,7 +66,11 @@ class OledDisplay {
 
   // Second line: the most important fault, otherwise endstop / homing overview.
   static void statusLine(const ArmStatus& s, char* out, size_t len) {
-    if (s.faultFlags & arm::kFaultEStopOpen) {
+    if (s.faultFlags & arm::kFaultSoftEStop) {
+      snprintf(out, len, "PC E-STOP: send reset");
+    } else if (s.faultFlags & arm::kFaultEStopLatched) {
+      snprintf(out, len, "E-STOP: close it, reset");
+    } else if (s.faultFlags & arm::kFaultEStopOpen) {
       snprintf(out, len, "E-STOP OPEN");
     } else if (s.state == arm::State::Homing) {
       snprintf(out, len, "Homing A%d: %s", s.homingAxis, Homing::phaseName(s.homingPhase));

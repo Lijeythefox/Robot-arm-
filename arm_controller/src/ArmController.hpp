@@ -58,7 +58,10 @@ class ArmController {
   bool _active = false;
   uint32_t _lastSetpointMs = 0;
   bool _commTimedOut = false;
-  bool _netLowReported = false;
+  uint8_t _netLowCount = 0;
+  bool _estopLatched = false;
+  bool _softEStop = false;
+  bool _resetPending = false;  // reset: drivers raised, waiting to read the ENABLE net
   bool _syncRequired = false;
   bool _homingFailed = false;
   uint8_t _homingReportAxis = 0;  // axis shown in the status (current or last failed)
@@ -80,9 +83,9 @@ class ArmController {
     _endstops.update();
     _enableNetHigh = digitalRead(HARDWARE_ENABLE) == HIGH;
 
+    checkEStop(now);
     handleCommands(now);
     handleSetpoints(now);
-    checkEnableNet(now);
     enforceEndstops();
     runHoming(now);
     updateSpeedLimits();
@@ -95,7 +98,7 @@ class ArmController {
   // Drivers
   // ---------------------------------------------------------------------------------------
   void enableDrivers(uint32_t now) {
-    if (_driversEnabled) return;
+    if (_driversEnabled || _estopLatched) return;
     digitalWrite(ENABLE_ALL, HIGH);
     _driversEnabled = true;
     _driversEnabledMs = now;
@@ -108,7 +111,7 @@ class ArmController {
     for (Axis* a : Axis::axisList) a->hardStop();
     digitalWrite(ENABLE_ALL, LOW);
     _driversEnabled = false;
-    _state = arm::State::Disabled;
+    if (!_estopLatched) _state = arm::State::Disabled;
     clearPendingTargets();
     if (_homedMask) shared::logEvent("drivers asleep - homing invalidated");
     _homedMask = 0;
@@ -118,20 +121,71 @@ class ArmController {
     return _driversEnabled && (now - _driversEnabledMs) >= DRIVER_WAKE_MS;
   }
 
-  // Original behaviour: if the ENABLE net reads LOW while we drive it HIGH (E-stop open),
-  // cancel all motion at the current position and ignore new targets.
-  void checkEnableNet(uint32_t now) {
-    if (!driversAwake(now) || _enableNetHigh) {
-      _netLowReported = false;
+  // ---------------------------------------------------------------------------------------
+  // E-stop
+  // ---------------------------------------------------------------------------------------
+  void checkEStop(uint32_t now) {
+    if (shared::pcEmergencyStop) {
+      shared::pcEmergencyStop = false;
+      if (!_estopLatched) latchEStop("PC emergency stop", true);
+    }
+
+    if (_resetPending) {
+      if (now - _driversEnabledMs < ESTOP_SETTLE_MS) return;
+      _resetPending = false;
+      if (_enableNetHigh) {
+        _estopLatched = false;
+        _softEStop = false;
+        _netLowCount = 0;
+        _state = arm::State::Ready;
+        _idleSinceMs = now;
+        _syncRequired = true;
+        shared::logEvent("E-stop reset - drivers enabled, holding position");
+      } else {
+        digitalWrite(ENABLE_ALL, LOW);
+        _driversEnabled = false;
+        shared::logEvent("reset refused: E-stop still open - close it and reset again");
+      }
       return;
     }
+
+    if (_estopLatched || !_driversEnabled || now - _driversEnabledMs < ESTOP_SETTLE_MS) {
+      _netLowCount = 0;
+      return;
+    }
+    if (_enableNetHigh) {
+      _netLowCount = 0;
+    } else if (++_netLowCount >= ESTOP_DEBOUNCE_MS / CONTROL_TICK_MS) {
+      latchEStop("E-STOP opened (ENABLE net LOW)", false);
+    }
+  }
+
+  void latchEStop(const char* reason, bool soft) {
     for (Axis* a : Axis::axisList) a->hardStop();
     clearPendingTargets();
-    if (_homing.active()) _homing.abort("ENABLE net LOW");
-    if (!_netLowReported) {
-      shared::logEvent("ENABLE net LOW (E-stop open?) - motion cancelled");
-      _netLowReported = true;
+    if (_homing.active()) _homing.abort(reason);
+    digitalWrite(ENABLE_ALL, LOW);
+    _driversEnabled = false;
+    _estopLatched = true;
+    _softEStop = soft;
+    _state = arm::State::EStop;
+    if (ESTOP_CLEARS_HOMED) _homedMask = 0;
+    shared::logEvent("%s - all motion stopped, send 'reset' once the E-stop is closed", reason);
+  }
+
+  arm::CommandResult resetEStop(uint32_t now) {
+    if (!_estopLatched) {
+      // Nothing latched: just clear the informational faults.
+      _homingFailed = false;
+      _endstopStopMask = 0;
+      shared::logEvent("faults cleared");
+      return arm::CommandResult::Accepted;
     }
+    digitalWrite(ENABLE_ALL, HIGH);  // the only way to see whether the E-stop is closed
+    _driversEnabled = true;
+    _driversEnabledMs = now;
+    _resetPending = true;
+    return arm::CommandResult::Accepted;
   }
 
   void manageDriverSleep(uint32_t now) {
@@ -208,7 +262,7 @@ class ArmController {
   // Homing
   // ---------------------------------------------------------------------------------------
   arm::CommandResult startHoming(const uint8_t* axes, int count, uint32_t now) {
-    if (_state == arm::State::Homing) return arm::CommandResult::Rejected;
+    if (_state == arm::State::Homing || _estopLatched) return arm::CommandResult::Rejected;
     for (Axis* a : Axis::axisList) a->stop();
     clearPendingTargets();
     enableDrivers(now);
@@ -236,7 +290,7 @@ class ArmController {
         return;
       }
     }
-    if (!_homing.active()) {  // aborted from elsewhere (ENABLE net, stop)
+    if (!_homing.active()) {  // aborted from elsewhere (stop command)
       finishHoming(true);
       return;
     }
@@ -264,7 +318,7 @@ class ArmController {
         _commTimedOut = false;
         shared::logEvent("setpoint stream resumed");
       }
-      if (_active && _state != arm::State::Homing) followSetpoints(msg, now);
+      if (_active && _state != arm::State::Homing && !_estopLatched) followSetpoints(msg, now);
     }
 
     if (COMM_TIMEOUT_MS > 0 && _active && _lastSetpointMs != 0 && !_commTimedOut &&
@@ -310,8 +364,11 @@ class ArmController {
 
   arm::CommandResult execute(const MotionCommand& cmd, uint32_t now) {
     bool axisValid = cmd.axis >= 1 && cmd.axis <= arm::kNumAxes;
-    bool busy = _state == arm::State::Homing;
+    bool busy = _state == arm::State::Homing || _estopLatched;
     switch (cmd.type) {
+      case arm::Command::Reset:
+        return resetEStop(now);
+
       case arm::Command::Stop:
         if (_homing.active()) _homing.abort("stop command");
         if (_state == arm::State::Homing) finishHoming(true);
@@ -360,6 +417,7 @@ class ArmController {
       }
 
       case arm::Command::EnableDrivers:
+        if (_estopLatched) return arm::CommandResult::Rejected;
         enableDrivers(now);
         shared::logEvent("drivers enabled");
         return arm::CommandResult::Accepted;
@@ -390,6 +448,8 @@ class ArmController {
     if (_homingFailed) s.faultFlags |= arm::kFaultHomingFailed;
     if (_syncRequired) s.faultFlags |= arm::kFaultSyncWait;
     if (driversAwake(now) && !_enableNetHigh) s.faultFlags |= arm::kFaultEStopOpen;
+    if (_estopLatched) s.faultFlags |= arm::kFaultEStopLatched;
+    if (_softEStop) s.faultFlags |= arm::kFaultSoftEStop;
     if (_state == arm::State::Homing || _homingFailed) {
       s.homingAxis = _homingReportAxis;
       s.homingPhase = (uint8_t)_homing.phase();

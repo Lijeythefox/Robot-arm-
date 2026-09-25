@@ -56,6 +56,9 @@ static bool handleFrame(uint8_t channel, const uint8_t* request, uint8_t* respon
   bool ext = arm::hasExtension(rx);
   bool setpointsValid = !ext || (rx.extFlags & arm::kExtSetpointsValid);
 
+  // The stock ROS2 driver always sends 0 here; any other client can use it as a software E-stop.
+  if (rx.emergencyStop) shared::pcEmergencyStop = true;
+
   if (setpointsValid) {
     SetpointMessage msg;
     msg.activate = rx.activate != 0;

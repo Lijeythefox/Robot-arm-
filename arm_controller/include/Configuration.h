@@ -125,6 +125,15 @@
 // DRV8825 needs up to 1.7 ms after SLP goes high before it accepts STEP pulses.
 #define DRIVER_WAKE_MS 2
 
+// E-stop: once the drivers are enabled, the ENABLE net must read HIGH. After ESTOP_SETTLE_MS
+// from enabling, ESTOP_DEBOUNCE_MS of LOW readings latch the E-stop: all motion is aborted,
+// GPIO4 goes LOW (so closing the E-stop does not re-energise the motors by itself) and nothing
+// moves until a "reset" command, which only succeeds once the E-stop is closed again.
+#define ESTOP_SETTLE_MS 5
+#define ESTOP_DEBOUNCE_MS 2
+// The drivers were asleep, so the arm may have moved under gravity: forget the homing.
+#define ESTOP_CLEARS_HOMED true
+
 // When to put the drivers to sleep after IDLE_SLEEP_DELAY_MS without motion.
 // Sleeping drivers keep motors cool (the original firmware always did this) but give no holding
 // torque: a loaded joint can sag and its counted position becomes wrong, so sleeping clears

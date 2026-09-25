@@ -65,6 +65,7 @@ what Espressif points PlatformIO users to. The arm uses the same pinned platform
 | `sethome <axis> <deg>` | declare an axis homed at `<deg>` where it stands (axes without a switch) |
 | `sethome all` | declare every axis homed at its current position |
 | `stop` | decelerate all axes, abort homing |
+| `reset` | clear a latched E-stop (only once it is closed again); otherwise clear fault flags |
 
 ### Endstops
 
@@ -126,6 +127,30 @@ Rules that come with homing:
   (or `sethome all` if the arm was powered up in its zero pose, which is what the original
   firmware assumed).
 
+### E-stop
+
+The NC E-stop on J8 sits between GPIO4 (`ENABLE_ALL`) and the ENABLE net that feeds all six
+DRV8825 SLP pins and GPIO34 (`HARDWARE_ENABLE`). The v5 schematic and PCB were checked: FLT and
+EN are unconnected on every driver, so an open E-stop leaves SLP held low by the chips' internal
+pull-downs and the drivers sleep in hardware, whatever the firmware does.
+
+Firmware side:
+
+- While GPIO4 is HIGH (and `ESTOP_SETTLE_MS` after raising it), GPIO34 must read HIGH.
+  `ESTOP_DEBOUNCE_MS` of LOW readings **latches** the E-stop: every axis and homing stops,
+  GPIO4 goes LOW (so closing the E-stop does not re-energise the motors by itself), setpoints
+  are ignored, and the OLED shows `E-STOP: close it, reset`. Over WiFi the response has
+  `errorCode = eStop` (4) and `faultFlags` bits `EStopLatched`.
+- `reset` raises GPIO4 and reads the net 5 ms later: if the E-stop is closed the drivers stay
+  awake holding position; if it is still open GPIO4 drops again and the reset is refused.
+- A latched E-stop clears the homed flags (`ESTOP_CLEARS_HOMED`): the drivers were asleep, so
+  the arm may have moved. After a reset the setpoint sync rule applies again.
+- A PC frame with `emergencyStop != 0` latches the same way (`PC E-STOP` on the OLED). The stock
+  ROS2 driver always sends 0.
+- With GPIO4 LOW (drivers asleep) the ENABLE net is LOW whatever the E-stop does, so the E-stop
+  state is only known while the drivers are enabled. Waking the drivers with the E-stop open
+  latches it within ~7 ms, before any step is sent.
+
 ## Bench tests
 
 Always: arm unloaded or motors disconnected first, low VMOT first (12 V), E-stop within reach.
@@ -176,3 +201,21 @@ Start with one axis, arm unloaded, 12 V, hand on the E-stop.
 7. ROS2 sync: with the stock driver running, `home` from the serial console. After homing the
    arm must **not** jump back to the old ROS pose; `status` shows the sync-wait flag. Send a new
    goal from MoveIt: the arm follows again and the log prints `PC setpoints in sync`.
+
+### Arm stage 3: E-stop
+
+1. **No motors.** `enable`, then press the E-stop: the log prints `E-STOP opened`, OLED
+   `E-STOP: close it, reset`, `status` shows state `E-STOP`, drivers off. Measure GPIO4 (J8
+   pin 1): 0 V.
+2. Release the E-stop: nothing changes, the drivers stay off (GPIO4 still 0 V).
+3. `reset` with the E-stop still pressed: `reset refused`. Release it, `reset`:
+   `E-stop reset - drivers enabled`, J8 pin 1 = 3.3 V.
+4. While latched, `jog 1 5`, `home` and `enable` are all rejected.
+5. **Motors connected, 12 V.** Jog an axis a long way (`jog 1 90`) and press the E-stop mid-move:
+   the motor stops at once (hardware) and the firmware latches. `status` shows every axis
+   `homed:no`.
+6. Press the E-stop with the drivers asleep (`disable`), then `jog 1 5`: the drivers wake, the
+   latch trips within a few ms and the axis does not move.
+7. ROS2: while streaming, press the E-stop, release it, `reset`. The arm must not move until a
+   new MoveIt goal (setpoint sync).
+8. Only then raise VMOT to 36 V and repeat 5.

@@ -53,6 +53,7 @@ class SerialConsole {
         "  sethome <axis> <deg> declare the current position of an axis as <deg>, homed\n"
         "  sethome all         declare every axis homed at its current position\n"
         "  stop                decelerate all axes to a stop\n"
+        "  reset               clear a latched E-stop (E-stop must be closed) / clear faults\n"
         "  help");
   }
 
@@ -94,6 +95,8 @@ class SerialConsole {
       send(arm::Command::DisableDrivers);
     } else if (cmd == "stop" || cmd == "s") {
       send(arm::Command::Stop);
+    } else if (cmd == "reset") {
+      send(arm::Command::Reset);
     } else if (cmd == "home" && argc == 1) {
       send(arm::Command::HomeAll);
     } else if (cmd == "home" && argc == 2) {

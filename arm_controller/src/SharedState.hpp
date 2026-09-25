@@ -64,6 +64,8 @@ inline QueueHandle_t eventQueue = nullptr;
 inline portMUX_TYPE statusMux = portMUX_INITIALIZER_UNLOCKED;
 inline ArmStatus status;
 inline volatile bool wifiConnected = false;
+// Set by the network task when a PC frame has emergencyStop != 0; consumed by the motion loop.
+inline volatile bool pcEmergencyStop = false;
 
 inline void init() {
   commandQueue = xQueueCreate(16, sizeof(MotionCommand));
