@@ -4,6 +4,7 @@
 #include <Arduino.h>
 
 #include "Configuration.h"
+#include "Homing.hpp"
 #include "OledDisplay.hpp"
 #include "SharedState.hpp"
 
@@ -47,6 +48,10 @@ class SerialConsole {
         "  endstops            toggle live endstop monitor (5 Hz)\n"
         "  enable | disable    wake / sleep all drivers\n"
         "  jog <axis> <deg>    relative move of one axis (soft limits apply)\n"
+        "  home                home all axes with endstops (HOMING_ORDER)\n"
+        "  home <axis>         home one axis\n"
+        "  sethome <axis> <deg> declare the current position of an axis as <deg>, homed\n"
+        "  sethome all         declare every axis homed at its current position\n"
         "  stop                decelerate all axes to a stop\n"
         "  help");
   }
@@ -89,6 +94,14 @@ class SerialConsole {
       send(arm::Command::DisableDrivers);
     } else if (cmd == "stop" || cmd == "s") {
       send(arm::Command::Stop);
+    } else if (cmd == "home" && argc == 1) {
+      send(arm::Command::HomeAll);
+    } else if (cmd == "home" && argc == 2) {
+      send(arm::Command::HomeAxis, atoi(argv[1]));
+    } else if (cmd == "sethome" && argc == 2 && String(argv[1]) == "all") {
+      send(arm::Command::SetHomeHere, 0);
+    } else if (cmd == "sethome" && argc == 3) {
+      send(arm::Command::SetHomeHere, atoi(argv[1]), (int32_t)lround(atof(argv[2]) * 1000.0));
     } else if (cmd == "jog" && argc == 3) {
       send(arm::Command::Jog, atoi(argv[1]), (int32_t)lround(atof(argv[2]) * 1000.0));
     } else {
@@ -107,7 +120,10 @@ class SerialConsole {
                     (s.homedMask & bit) ? "yes" : "no",
                     !(s.endstopEnabledMask & bit) ? "off" : (s.endstopMask & bit) ? "HIT" : "ok");
     }
-    Serial.printf("  faults 0x%02X\n", s.faultFlags);
+    if (s.state == arm::State::Homing || (s.faultFlags & arm::kFaultHomingFailed))
+      Serial.printf("  homing A%d phase %s\n", s.homingAxis, Homing::phaseName(s.homingPhase));
+    Serial.printf("  faults 0x%02X%s\n", s.faultFlags,
+                  (s.faultFlags & arm::kFaultSyncWait) ? " (waiting for PC setpoints to match)" : "");
   }
 };
 

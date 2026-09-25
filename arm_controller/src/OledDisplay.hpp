@@ -5,6 +5,7 @@
 #include <Wire.h>
 
 #include "Configuration.h"
+#include "Homing.hpp"
 #include "SSD1306Wire.h"
 #include "SharedState.hpp"
 
@@ -67,12 +68,16 @@ class OledDisplay {
   static void statusLine(const ArmStatus& s, char* out, size_t len) {
     if (s.faultFlags & arm::kFaultEStopOpen) {
       snprintf(out, len, "E-STOP OPEN");
+    } else if (s.state == arm::State::Homing) {
+      snprintf(out, len, "Homing A%d: %s", s.homingAxis, Homing::phaseName(s.homingPhase));
+    } else if (s.faultFlags & arm::kFaultHomingFailed) {
+      snprintf(out, len, "HOMING FAILED A%d", s.homingAxis);
     } else if (s.faultFlags & arm::kFaultCommTimeout) {
       snprintf(out, len, "PC stream lost - holding");
     } else if (s.faultFlags & arm::kFaultEndstopHit) {
       snprintf(out, len, "Endstop hit: %s", axisList(s.endstopMask).c_str());
     } else {
-      snprintf(out, len, "End: %s", endstopSummary(s).c_str());
+      snprintf(out, len, "H:%s E:%s", homedSummary(s).c_str(), endstopSummary(s).c_str());
     }
   }
 
@@ -81,6 +86,13 @@ class OledDisplay {
     for (int a = 1; a <= 6; a++)
       if (mask & (1 << (a - 1))) r += String(a) + " ";
     return r.length() ? r : String("-");
+  }
+
+  // One character per axis: axis number if homed, '.' if not.
+  static String homedSummary(const ArmStatus& s) {
+    String r;
+    for (int a = 0; a < 6; a++) r += (s.homedMask & (1 << a)) ? char('1' + a) : '.';
+    return r;
   }
 
   // One character per axis: '.' ok, 'X' triggered, '-' not fitted.

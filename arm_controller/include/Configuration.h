@@ -125,9 +125,17 @@
 // DRV8825 needs up to 1.7 ms after SLP goes high before it accepts STEP pulses.
 #define DRIVER_WAKE_MS 2
 
-// Like the original: put the drivers to sleep when nothing has moved for IDLE_SLEEP_DELAY_MS,
-// so idle motors stay cool. Sleeping drivers give no holding torque.
-#define IDLE_SLEEP_DRIVERS true
+// When to put the drivers to sleep after IDLE_SLEEP_DELAY_MS without motion.
+// Sleeping drivers keep motors cool (the original firmware always did this) but give no holding
+// torque: a loaded joint can sag and its counted position becomes wrong, so sleeping clears
+// the homed flags.
+//   IDLE_SLEEP_NEVER         - hold position forever
+//   IDLE_SLEEP_WHEN_UNHOMED  - behave like the original until the arm is homed, then hold
+//   IDLE_SLEEP_ALWAYS        - always sleep when idle (homing is lost every time)
+#define IDLE_SLEEP_NEVER 0
+#define IDLE_SLEEP_WHEN_UNHOMED 1
+#define IDLE_SLEEP_ALWAYS 2
+#define IDLE_SLEEP_MODE IDLE_SLEEP_WHEN_UNHOMED
 #define IDLE_SLEEP_DELAY_MS 500
 
 // ============================================================================================
@@ -166,6 +174,64 @@
 #define AXIS_6_ENDSTOP_PIN 35         // input only, 10k pull-up on board
 #define AXIS_6_ENDSTOP_PULLUP false
 #define AXIS_6_HOME_DIR -1
+
+// Homing, per axis (all TBD: measure on the real arm, defaults are deliberately slow).
+//   HOME_SWITCH_DEG    joint angle at which the switch triggers; becomes the axis position
+//   HOME_FAST_DEG_S    first approach speed          HOME_SLOW_DEG_S  re-approach speed
+//   HOME_BACKOFF_DEG   distance to back off between approaches and after homing
+//   HOME_MAX_TRAVEL_DEG  fail if the switch is not found within this distance
+//   HOME_PARK_DEG      where to go after homing when HOMING_PARK_AFTER is true
+#define AXIS_1_HOME_SWITCH_DEG AXIS_1_POS_MIN
+#define AXIS_1_HOME_FAST_DEG_S 5.0
+#define AXIS_1_HOME_SLOW_DEG_S 1.0
+#define AXIS_1_HOME_BACKOFF_DEG 5.0
+#define AXIS_1_HOME_MAX_TRAVEL_DEG (AXIS_1_POS_MAX - AXIS_1_POS_MIN + 20)
+#define AXIS_1_HOME_PARK_DEG 0.0
+
+#define AXIS_2_HOME_SWITCH_DEG AXIS_2_POS_MIN
+#define AXIS_2_HOME_FAST_DEG_S 5.0
+#define AXIS_2_HOME_SLOW_DEG_S 1.0
+#define AXIS_2_HOME_BACKOFF_DEG 5.0
+#define AXIS_2_HOME_MAX_TRAVEL_DEG (AXIS_2_POS_MAX - AXIS_2_POS_MIN + 20)
+#define AXIS_2_HOME_PARK_DEG 0.0
+
+#define AXIS_3_HOME_SWITCH_DEG AXIS_3_POS_MIN
+#define AXIS_3_HOME_FAST_DEG_S 5.0
+#define AXIS_3_HOME_SLOW_DEG_S 1.0
+#define AXIS_3_HOME_BACKOFF_DEG 5.0
+#define AXIS_3_HOME_MAX_TRAVEL_DEG (AXIS_3_POS_MAX - AXIS_3_POS_MIN + 20)
+#define AXIS_3_HOME_PARK_DEG 0.0
+
+#define AXIS_4_HOME_SWITCH_DEG AXIS_4_POS_MIN
+#define AXIS_4_HOME_FAST_DEG_S 8.0
+#define AXIS_4_HOME_SLOW_DEG_S 2.0
+#define AXIS_4_HOME_BACKOFF_DEG 5.0
+#define AXIS_4_HOME_MAX_TRAVEL_DEG (AXIS_4_POS_MAX - AXIS_4_POS_MIN + 20)
+#define AXIS_4_HOME_PARK_DEG 0.0
+
+#define AXIS_5_HOME_SWITCH_DEG AXIS_5_POS_MIN
+#define AXIS_5_HOME_FAST_DEG_S 8.0
+#define AXIS_5_HOME_SLOW_DEG_S 2.0
+#define AXIS_5_HOME_BACKOFF_DEG 5.0
+#define AXIS_5_HOME_MAX_TRAVEL_DEG (AXIS_5_POS_MAX - AXIS_5_POS_MIN + 20)
+#define AXIS_5_HOME_PARK_DEG 0.0
+
+#define AXIS_6_HOME_SWITCH_DEG AXIS_6_POS_MIN
+#define AXIS_6_HOME_FAST_DEG_S 8.0
+#define AXIS_6_HOME_SLOW_DEG_S 2.0
+#define AXIS_6_HOME_BACKOFF_DEG 5.0
+#define AXIS_6_HOME_MAX_TRAVEL_DEG (AXIS_6_POS_MAX - AXIS_6_POS_MIN + 20)
+#define AXIS_6_HOME_PARK_DEG 0.0
+
+// "home all" order: big joints first. Axes without an enabled endstop are skipped.
+#define HOMING_ORDER {2, 3, 5, 1, 4, 6}
+// After each axis is homed (and backed off its switch), move it to HOME_PARK_DEG.
+#define HOMING_PARK_AFTER false
+
+// After homing (or anything else that changes the position frame) the PC's setpoints are
+// ignored until they come within this distance of the actual position on every axis. Stops a
+// ROS2 controller that is still holding a pre-homing pose from yanking the arm there.
+#define SYNC_TOLERANCE_DEG 2.0
 
 // The board's RC filter is ~1 ms. A level must be stable for this long before it counts.
 // GPIO36/39 can glitch while WiFi/ADC are active; this also rejects those.

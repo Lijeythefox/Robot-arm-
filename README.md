@@ -61,7 +61,10 @@ what Espressif points PlatformIO users to. The arm uses the same pinned platform
 | `endstops` | toggle a live endstop monitor (5 Hz) |
 | `enable` / `disable` | wake / sleep all drivers |
 | `jog <axis> <deg>` | relative move of one axis (soft limits apply) |
-| `stop` | decelerate all axes |
+| `home` / `home <axis>` | home all axes (in `HOMING_ORDER`) / one axis |
+| `sethome <axis> <deg>` | declare an axis homed at `<deg>` where it stands (axes without a switch) |
+| `sethome all` | declare every axis homed at its current position |
+| `stop` | decelerate all axes, abort homing |
 
 ### Endstops
 
@@ -84,6 +87,44 @@ brief glitches GPIO36/39 can show while WiFi is active.
 
 An endstop that reads HIGH while its axis moves **towards** it stops that axis immediately.
 Moves away from it are still allowed, so a jog in the other direction frees the axis.
+
+### Homing
+
+Per axis: fast approach towards the switch, back off, slow re-approach, set the position, then
+back off the switch again (and optionally park). "Home all" uses `HOMING_ORDER`
+(default `{2, 3, 5, 1, 4, 6}`, big joints first) and skips axes without an enabled endstop.
+
+| Config (per axis) | Meaning | Default (TBD) |
+|---|---|---|
+| `AXIS_n_HOME_DIR` | switch at the -1 (POS_MIN) or +1 (POS_MAX) end | -1 |
+| `AXIS_n_HOME_SWITCH_DEG` | joint angle where the switch triggers | `AXIS_n_POS_MIN` |
+| `AXIS_n_HOME_FAST_DEG_S` / `_SLOW_DEG_S` | approach speeds | 5 / 1 (axes 1-3), 8 / 2 (4-6) |
+| `AXIS_n_HOME_BACKOFF_DEG` | back-off distance | 5 |
+| `AXIS_n_HOME_MAX_TRAVEL_DEG` | fail if the switch is not found within this | soft-limit span + 20 |
+| `AXIS_n_HOME_PARK_DEG` + `HOMING_PARK_AFTER` | optional move after homing | 0, off |
+
+Homing never exceeds the axis' unhomed speed/accel limits. It fails (and says why on serial and
+the OLED) if the switch is not found within the max travel, does not release after backing
+off, or is already pressed and stays pressed (stuck switch or broken wire).
+
+Rules that come with homing:
+
+- **Unhomed axes** use `AXIS_n_UNHOMED_VEL_MAX` / `_ACC_MAX` (the original limits). Homed axes
+  use `AXIS_n_VEL_MAX` / `_ACC_MAX`.
+- **Soft limits** (`AXIS_n_POS_MIN/MAX`) clamp every normal move, as in the original. Once an
+  axis is homed they are real joint angles.
+- **Setpoint sync.** Homing changes the position frame, and a running ROS2 controller keeps
+  sending the pose it held before. After homing (or `sethome`), PC setpoints are ignored until
+  they are within `SYNC_TOLERANCE_DEG` (2 deg) of the actual pose on every axis. The status
+  shows `faults 0x40 (waiting for PC setpoints to match)`. The next MoveIt/trajectory goal
+  starts from the reported pose, so it syncs by itself; so does restarting the controller.
+- **Driver sleep** (`IDLE_SLEEP_MODE`): the original slept the drivers whenever the arm was idle.
+  That removes holding torque, so a sleeping arm is no longer considered homed. The default
+  `IDLE_SLEEP_WHEN_UNHOMED` behaves like the original until something is homed, then keeps the
+  drivers awake. `disable` also clears the homed flags.
+- Axes without a switch: move them to a known pose and use `sethome <axis> <deg>`
+  (or `sethome all` if the arm was powered up in its zero pose, which is what the original
+  firmware assumed).
 
 ## Bench tests
 
@@ -110,3 +151,28 @@ Always: arm unloaded or motors disconnected first, low VMOT first (12 V), E-stop
    original firmware.
 8. ROS2: start the stock driver. The arm follows as before and the OLED shows `PC on`. Stop the
    ROS2 driver mid-motion: within 250 ms the log prints `no setpoints ... axes stopped`.
+
+### Arm stage 2: homing
+
+Start with one axis, arm unloaded, 12 V, hand on the E-stop.
+
+1. Check `AXIS_n_HOME_DIR` first: `jog <n> -5` must move the axis **towards** its switch for
+   HOME_DIR = -1. If it moves away, either the switch is at the other end (HOME_DIR = +1) or
+   `AXIS_n_INVERT_DIRECTION` is wrong for your wiring. Fix that before homing.
+2. `home <n>`. Watch the OLED line `Homing A<n>: fast`, then `back off`, `slow`, `back off`.
+   Press the switch by hand during the fast approach if the axis is far from it: the axis must
+   stop, back off, and re-approach slowly. The log ends with `A<n> homed` and `homing complete`,
+   and `status` shows `homed:yes` and the position = HOME_SWITCH_DEG + back-off.
+3. Failure paths:
+   - unplug the switch connector (reads HIGH), `home <n>`: expect `switch still pressed after
+     backing off` and `HOMING FAILED A<n>` on the OLED, with no approach move;
+   - temporarily set `AXIS_n_HOME_MAX_TRAVEL_DEG` to 10 with the axis far from the switch:
+     expect `switch not found within 10 deg`;
+   - `stop` during homing aborts it.
+4. Repeatability: `home <n>` several times, and note the position printed after each (it should
+   be the same to within a few hundredths of a degree). Then `jog <n> 20`, `home <n>` again.
+5. Soft limits: after homing, `jog <n> 999` stops at `AXIS_n_POS_MAX`.
+6. `home` (all): axes run in `HOMING_ORDER`, skipping those without switches.
+7. ROS2 sync: with the stock driver running, `home` from the serial console. After homing the
+   arm must **not** jump back to the old ROS pose; `status` shows the sync-wait flag. Send a new
+   goal from MoveIt: the arm follows again and the log prints `PC setpoints in sync`.
