@@ -188,6 +188,39 @@ reach it`, the axis never got to that speed in the available travel: raise the a
 the test acceleration. The test stops on an endstop or the E-stop, and afterwards the axis
 counts as un-homed (a stall loses steps that cannot be detected without encoders).
 
+## Claw controller
+
+Replaces the original two-servo gripper. Three fingers, each curled by a tendon wound on an N20
+gear motor drum (6 V motors run at 5 V); an elastic (TBD) opens the finger when the tendon is
+unwound. No encoders: grip and stall detection come from motor current.
+
+### Hardware (checked against `ClawGripperPCB.kicad_sch`)
+
+| Signal | GPIO | Driver pin | Motor |
+|---|---|---|---|
+| A_IN1 / A_IN2 / A_PWM | 0 / 1 / 4 | U6 AIN1 / AIN2 / PWMA | A (J1) |
+| B_IN1 / B_IN2 / B_PWM | 5 / 10 / 23 | U6 BIN1 / BIN2 / PWMB | B (J2) |
+| C_IN1 / C_IN2 / C_PWM | 24 / 15 / 2 | U5 AIN1 / AIN2 / PWMA | C (J3) |
+| SDA / SCL | 8 / 9 | INA219 U2 (0x40, A), U3 (0x41, B), U4 (0x44, C) | 4.7k pull-ups |
+| red / green LED | 26 / 25 | 220R to GND | |
+
+- TB6612 STBY is tied to 3V3; U5 channel B inputs are tied to GND.
+- Each 0.1 ohm shunt (R5-R7) sits **in the motor lead**, between the driver output (AO1/BO1) and
+  connector pin 1, with INA219 IN+ on the driver side. Current therefore reads positive when
+  driving "forward" (IN1 H) and negative in reverse. During the PWM off-time the TB6612 short-
+  brakes, so the shunt sees the real averaged motor current. The firmware uses its magnitude.
+- PWM is 20 kHz, 10-bit (LEDC).
+- Unused: GPIO3, 7, 11 (TX), 12 (RX). USB is native (GPIO13/14), so the build routes `Serial`
+  to USB CDC (`ARDUINO_USB_CDC_ON_BOOT=1`).
+- The board's VBUS pin is on the same net as J4 +5 V. With USB plugged in and no 5 V on J4, the
+  motors run from the PC's USB port. Keep motor tests to J4 power, and check whether the
+  Waveshare board has a diode between its USB connector and VBUS before connecting both.
+
+### Configuration
+
+`claw_controller/include/Configuration.h`. Per finger: `FINGER_x_INVERT` (which direction closes,
+TBD: set so that `move a close 40 300` curls finger A).
+
 ## Bench tests
 
 Always: arm unloaded or motors disconnected first, low VMOT first (12 V), E-stop within reach.
@@ -272,3 +305,16 @@ Start with one axis, arm unloaded, 12 V, hand on the E-stop.
    `dume_cli.py status --loop`) hammers the network. There must be no audible change.
 5. Set `AXIS_n_VEL_MAX` / `ACC_MAX` to ~70% of the found limits, rebuild, home, and check that
    `jog <n> 90` runs smoothly at the new speed.
+
+### Claw stage 1: motor drivers and LEDs
+
+1. **USB only, J4 unpowered, motors unplugged.** Flash (`claw_controller`), open the monitor.
+   Expect `DUM-E claw starting` and the help text. The green LED is on.
+2. `move a close 50 1000`: green blinks fast for 1 s. Probe J1 with a multimeter (DC): about
+   2.5 V average. `move a open 50 1000`: same magnitude, opposite sign. Repeat for b, c.
+3. **J4 at 5 V, one motor on J1, tendon not attached.** `move a close 30 500`: the motor turns;
+   note the direction. `move a open 30 500`: it reverses. Set `FINGER_A_INVERT` so that "close"
+   winds the tendon. Repeat for B and C.
+4. `move a close 80 3000` then `stop a` after one second: the motor stops at once (brake).
+5. `move a close 60 2000` followed immediately by `move a open 60 2000`: there is a short brake
+   (30 ms) before reversing, never a hard reversal.
