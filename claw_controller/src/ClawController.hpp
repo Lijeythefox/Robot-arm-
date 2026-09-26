@@ -24,6 +24,11 @@ class ClawController {
 
   void tick(uint32_t now) {
     sampleCurrents(now);
+    if (shared::pcEmergencyStop) {
+      shared::pcEmergencyStop = false;
+      for (Finger& f : _fingers) f.emergencyStop(now);
+      shared::logEvent("PC emergency stop - all fingers braked");
+    }
     handleCommands(now);
     for (int i = 0; i < claw::kNumFingers; i++) _fingers[i].update(now, _currentmA[i]);
     trackMoveStats(now);
@@ -271,7 +276,7 @@ class ClawController {
   void updateLeds(uint32_t now) {
     ClawStatus s = shared::readStatus();
     using P = StatusLeds::Pattern;
-    P green = P::On;
+    P green = shared::wifiConnected ? P::On : P::SlowBlink;
     switch (s.state) {
       case claw::ClawState::Closing:
       case claw::ClawState::Opening:

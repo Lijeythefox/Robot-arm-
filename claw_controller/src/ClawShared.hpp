@@ -57,6 +57,8 @@ inline portMUX_TYPE statusMux = portMUX_INITIALIZER_UNLOCKED;
 inline ClawStatus status;
 inline volatile bool wifiConnected = false;
 inline volatile int8_t rssi = 0;
+// Set by the network task when a PC frame has emergencyStop != 0; consumed by the control task.
+inline volatile bool pcEmergencyStop = false;
 
 inline void init() {
   commandQueue = xQueueCreate(16, sizeof(ClawCommand));

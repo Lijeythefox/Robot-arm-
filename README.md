@@ -303,6 +303,57 @@ Both alternating: calibration mode.
 `claw_controller/include/Configuration.h`. Per finger: `FINGER_x_INVERT` (which direction closes,
 TBD: set so that `move a close 40 300` curls finger A).
 
+## Protocol
+
+Both boards keep the original diy_robotics framing: TCP, fixed 64-byte request, fixed 64-byte
+response, ports 80 (ROS2) and now also 81 (tools, so they can talk while ROS2 holds port 80;
+each port serves one client, and a new connection replaces a stale one).
+
+The original fields occupy the first bytes (arm: 0-27, claw: 0-4) and are unchanged. The stock
+ROS2 drivers zero-fill the rest of the request, so **an extension is only used when byte
+`extMagic` = 0xD5**. Anything else is handled exactly like the original firmware. Responses
+always carry the extension; the stock drivers ignore it (the arm driver only reads
+`jointPositions`, the gripper service only `gripperState`). Full definitions, with
+compile-time checks on the offsets: `shared/include/dume/ArmProtocol.h` and `ClawProtocol.h`.
+Both headers use only `<stdint.h>`, so they can be copied into the ROS2 packages later.
+
+Extension commands run **once per new `commandSeq`**; re-sending the same frame polls the
+status without repeating the command. The response echoes `lastCommandSeq` and
+`lastCommandResult` (1 accepted, 2 rejected, 3 bad argument).
+
+**Arm** request extension: `command` (1 home all, 2 home axis, 3 reset, 4 stop, 5 speed test,
+6 disable drivers, 7 set home here, 8 jog, 9 enable drivers), `commandArg` (axis), `commandSeq`,
+`extFlags` (bit 0: `jointSetpoints`/`activate` valid, so tools that only send commands leave it
+0), `param[3]`. Response extension: `state`, `homedMask`, `endstopMask`, `endstopEnabledMask`,
+`faultFlags`, homing axis/phase, `driversEnabled`, `enableNetHigh` (GPIO34), speed-test axis and
+speed. `errorCode` now reports 4 E-stop, 5 endstop hit, 6 homing failed, 7 comm timeout.
+`emergencyStop` (byte 1, always 0 from ROS2) latches a software E-stop.
+
+**Claw** legacy behaviour: `setGripper` 1 = close (with grip detection), 0 = open, acted on when it
+differs from the last open/close command (as the original), and also when a finger is faulted,
+so calling the ROS2 service again retries. `gripperState` reports that command. Request
+extension: `command` (1 open, 2 close, 3 close to target current, 4 move finger, 5 stop,
+6 reset faults, 7 calibration on/off), `commandSeq`, `fingerMask` (bit 0 A, 1 B, 2 C, 0 = all),
+`arg`, `effortPct`, `durationMs`, `targetCurrentmA`. Response extension: claw state, per-finger
+state, fault, current and peak current (mA), RSSI, flags (calibration, sensor fault).
+
+### dume_cli.py
+
+`shared/tools/dume_cli.py` (Python 3, no extra packages) speaks the extension on port 81:
+
+    python shared/tools/dume_cli.py arm status --loop
+    python shared/tools/dume_cli.py arm home 2
+    python shared/tools/dume_cli.py arm speedtest 4 --start 500 --max 8000 --inc 500
+    python shared/tools/dume_cli.py arm reset
+    python shared/tools/dume_cli.py claw close
+    python shared/tools/dume_cli.py claw force 400 b
+    python shared/tools/dume_cli.py claw move a open 50 800
+    python shared/tools/dume_cli.py claw status --loop
+
+`--host` overrides the default addresses (arm 192.168.212.203, claw 192.168.212.202),
+`--port 80` talks on the ROS2 port when ROS2 is not running. `arm estop` / `claw estop` send
+`emergencyStop`.
+
 ## Bench tests
 
 Always: arm unloaded or motors disconnected first, low VMOT first (12 V), E-stop within reach.
@@ -451,3 +502,21 @@ Enter the stage 3 numbers in `Configuration.h` first. J4 at 5 V, claw on the ben
    of the stall `A OVERCURRENT` and the motor stops. Motor and TB6612 must not get hot.
 7. Hold: `close` on an object and leave it for a minute; feel the motors (warm is ok, hot is not;
    lower `HOLD_EFFORT_PCT` or set `HOLD_MAX_MS`).
+
+### Claw stage 5: WiFi protocol
+
+1. Set `secrets.h` and the IP block, flash. The log shows `[wifi] connected`; green goes from
+   slow blink (no WiFi) to solid.
+2. From the PC: `python shared/tools/dume_cli.py claw status`, then `claw close`, `claw open`,
+   `claw force 300 a`, `claw move b close 40 500`, `claw stop`. Each prints `accepted` and the
+   new state.
+3. Stock ROS2 gripper service (port 80): `ros2 service call /gripper_control
+   std_srvs/srv/SetBool "{data: true}"` closes with grip detection; `false` opens. The service
+   log shows `Gripper State = Closed/Open` as before.
+4. While ROS2 is connected, `dume_cli.py claw status --loop` on port 81 must keep working.
+5. Kill the ROS2 service without closing the socket (unplug the PC's network), reconnect: the
+   claw accepts the new connection without a reboot.
+6. `dume_cli.py claw estop`: every finger brakes with `fault: emergency stop`, error code 6;
+   `claw open` clears it.
+7. Arm: `dume_cli.py arm status --loop` while the stock ROS2 arm driver runs on port 80; then
+   `dume_cli.py arm estop` latches the arm E-stop and `dume_cli.py arm reset` clears it.
