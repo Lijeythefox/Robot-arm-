@@ -97,22 +97,23 @@ class FrameServer {
     // A new connection always wins: the old socket is usually a dead peer that never sent FIN.
     if (_server.hasClient()) {
       WiFiClient incoming = _server.accept();
-      if (_client && _client.connected()) {
+      if (_hasClient && _client.connected()) {
         Serial.printf("[net:%u] replacing existing client\n", _port);
         _client.stop();
       }
       _client = incoming;
       _client.setNoDelay(true);
+      _hasClient = true;
       _newClient = true;
       _partialSinceMs = 0;
       Serial.printf("[net:%u] client %s connected\n", _port, _client.remoteIP().toString().c_str());
     }
 
-    if (!_client) return;
+    if (!_hasClient) return;
     if (!_client.connected()) {
       Serial.printf("[net:%u] client disconnected\n", _port);
       _client.stop();
-      _client = WiFiClient();
+      _hasClient = false;
       return;
     }
 
@@ -139,7 +140,7 @@ class FrameServer {
     }
   }
 
-  bool hasClient() { return _client && _client.connected(); }
+  bool hasClient() { return _hasClient && _client.connected(); }
   uint32_t lastFrameMs() const { return _lastFrameMs; }
   uint32_t frameCount() const { return _frames; }
 
@@ -150,6 +151,7 @@ class FrameServer {
   uint16_t _port;
   Handler _handler;
   bool _started = false;
+  bool _hasClient = false;
   bool _newClient = false;
   uint32_t _partialSinceMs = 0;
   uint32_t _lastFrameMs = 0;

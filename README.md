@@ -13,6 +13,44 @@ Both keep the original diy_robotics 64-byte TCP protocol, so the stock ROS2 pack
 (`diy_robotarm_wer24_driver`, `diy_soft_gripper_driver`) keep working unchanged. New features
 live in the unused tail of each frame (see [Protocol](#protocol)).
 
+## Hardware review notes
+
+Checked against `DUM-E_arm_controller_v5.kicad_sch` + `.kicad_pcb` (their netlists match
+pin for pin) and `ClawGripperPCB.kicad_sch` (the claw `.kicad_pcb` was not available).
+Everything in the firmware brief matched the boards. Notes for bench testing and the next
+board revision (none of these change the firmware):
+
+- **Arm E-stop:** DRV8825 FLT and EN are unconnected on all six footprints, so SLP only sees
+  the ENABLE net and an open E-stop really does sleep the drivers. When open, the ENABLE side
+  of the E-stop cable is held low only by the six drivers' internal pull-downs; a 10k
+  pull-down on ENABLE would make it stiffer against noise on a long cable.
+- **Arm VMOT:** the P6KE43A TVS has a 36.8 V stand-off and starts conducting from ~41 V. At
+  36 V there is little margin: keep the Mean Well's trim pot at 36.0 V, not higher. Its clamp
+  voltage at full pulse current (~59 V) is above the DRV8825's 47 V absolute maximum, so it
+  absorbs energy but cannot guarantee a limit. Moderate `ACC_MAX` keeps regenerated energy low
+  when big joints decelerate.
+- **Arm title blocks:** the schematic says v4 and the PCB "diy_robotics_arm V03"; the
+  content is the v5 design.
+- **Arm strapping pins:** a closed endstop on GPIO15 at boot only silences the ROM boot log.
+  GPIO2 (endstop 2) is LOW or floating at boot as download mode requires.
+- **Claw USB/5 V:** the Waveshare board's VBUS pin is on the J4 +5 V net (see the claw
+  section).
+- **Claw strapping pins:** the LEDs on GPIO25/26 are boot-mode strapping pins on the ESP32-C5.
+  If a board ever fails to boot normally with the LEDs fitted, that is the first suspect.
+  C_PWM on GPIO2 (MTMS) only matters for SDIO boot.
+
+## Values still to measure (TBD)
+
+| Where | What |
+|---|---|
+| arm `AXIS_n_HOME_DIR`, `_HOME_SWITCH_DEG` | which end each switch is at and the joint angle where it triggers |
+| arm homing speeds / back-off / max travel | defaults are slow and safe |
+| arm `AXIS_n_VEL_MAX` / `ACC_MAX` | from the speed test (start: 2x original) |
+| claw `FINGER_x_INVERT` | which direction closes each finger |
+| claw thresholds and times | from calibration mode (grip threshold, hard limit, efforts, open time/mode) |
+| claw `INA_MAX_CURRENT_A` | N20 stall current at 5 V (sets the INA219 range) |
+| claw return mechanism | elastic assumed; `OPEN_MODE` picks how opening ends |
+
 ## Building and flashing (Windows, VS Code + PlatformIO)
 
 1. Install VS Code and the PlatformIO extension. Git must be installed (the platform needs it).
@@ -46,8 +84,10 @@ what Espressif points PlatformIO users to. The arm uses the same pinned platform
   core 1 was stepping the same objects.)
 - The OLED is redrawn by its own low-priority task at 4 Hz, not inside the network callback on
   every message.
-- The WiFi code no longer blocks, serves a second port (81) for tools, and accepts a
-  reconnecting ROS2 driver without a reboot.
+- The WiFi code (`shared/include/dume/FrameServer.hpp`, replacing `WiFiConnection.hpp`) no
+  longer blocks, serves a second port (81) for tools, and accepts a reconnecting ROS2 driver
+  without a reboot. `DataFormat.hpp` is replaced by `shared/include/dume/ArmProtocol.h`, which
+  is byte-compatible.
 - If a client stops streaming setpoints for `COMM_TIMEOUT_MS` (250 ms), all axes decelerate to a
   stop and hold.
 
@@ -298,10 +338,26 @@ Each finger is a state machine driven by time and filtered motor current:
 
 Both alternating: calibration mode.
 
+### Serial console
+
+USB (native, 115200), newline terminated; `finger` = `a`, `b`, `c` or `all` (default all).
+
+| Command | Action |
+|---|---|
+| `status` | claw state, per-finger state, current, peak, fault |
+| `open [finger]` / `close [finger]` | open / close with grip detection |
+| `force <mA> [finger]` | close until the current reaches `<mA>` |
+| `move <finger> <close\|open> <pct> <ms>` | timed manual move (max 5 s) |
+| `stop [finger]` | brake |
+| `reset [finger]` | clear faults |
+| `cal on` / `cal off` | calibration CSV stream |
+| `i2c` | scan the I2C bus |
+
 ### Configuration
 
-`claw_controller/include/Configuration.h`. Per finger: `FINGER_x_INVERT` (which direction closes,
-TBD: set so that `move a close 40 300` curls finger A).
+`claw_controller/include/Configuration.h`: pins, PWM, INA219 setup, grip logic (see the table
+above), LED and task settings. Per finger: `FINGER_x_INVERT` (which direction closes, TBD: set so
+that `move a close 40 300` curls finger A).
 
 ## Protocol
 

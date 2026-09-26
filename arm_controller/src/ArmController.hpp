@@ -11,8 +11,9 @@
 #include "SharedState.hpp"
 
 // Runs on core 1 inside the Arduino loop. Owns the axes, the driver enable line and the
-// endstops. loopOnce() polls the steppers as fast as possible and runs the control tick
-// (endstops, safety checks, commands, setpoints, homing) every CONTROL_TICK_MS.
+// endstops. loopOnce() runs the control tick (endstops, E-stop, commands, setpoints, homing,
+// speed test) every CONTROL_TICK_MS; with the AccelStepper backend it also polls the steppers
+// as fast as possible in between.
 class ArmController {
  public:
   void begin() {
