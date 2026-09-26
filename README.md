@@ -230,6 +230,19 @@ A sensor that does not answer at boot, or stops answering, **locks its finger ou
 `disabled`, red LED blinking slowly) because without it there is no stall protection. It is
 retried every second. `ALLOW_MOTOR_WITHOUT_SENSOR` overrides this for bench work.
 
+### Calibration mode
+
+`cal on` streams one CSV line per 20 ms (`CAL_STREAM_HZ`) while you jog the fingers with `move`:
+
+    cal,ms,A_raw_mA,B_raw_mA,C_raw_mA,A_mA,B_mA,C_mA,A_state,B_state,C_state
+    cal,51234,-3.2,0.4,1.1,3.0,0.5,1.0,idle,idle,idle
+
+`*_raw_mA` is signed and unfiltered, `*_mA` is the filtered magnitude the grip logic uses.
+After every `move` a summary line follows, e.g.
+`A close 60% 1500 ms: avg 118 mA after inrush, peak 420 mA`. The first `INRUSH_BLANK_MS`
+(150 ms) of each move is excluded from the average because the start-up current is always
+high. Both LEDs alternate while calibration mode is on. Copy the CSV into a spreadsheet to plot it.
+
 ### Configuration
 
 `claw_controller/include/Configuration.h`. Per finger: `FINGER_x_INVERT` (which direction closes,
@@ -338,10 +351,30 @@ Start with one axis, arm unloaded, 12 V, hand on the E-stop.
 1. **USB + J4 5 V, motors unplugged.** The log shows three lines `INA219 A (0x40) ok: range 1600
    mA`, B (0x41), C (0x44). `i2c` lists 0x40 0x41 0x44. `status` shows all three at ~0 mA
    (a few mA of offset is normal).
-2. Unsolder nothing: to test the lock-out, hold SDA of one sensor... simpler: temporarily set
-   `INA_ADDR_C 0x45`, flash, and check that the log says `INA219 C (0x45) NOT FOUND - finger C
-   locked out`, the red LED blinks slowly, and `move c close 50 500` does nothing. Restore it.
+2. Lock-out test: temporarily set `INA_ADDR_C 0x45` (no such device), flash, and check that
+   the log says `INA219 C (0x45) NOT FOUND - finger C locked out`, the red LED blinks slowly, and
+   `move c close 50 500` does nothing. Restore the address.
 3. **Motor A plugged in, no tendon.** `move a close 50 2000` and run `status` during the move:
    free-running current (typically 50-150 mA for an N20). Pinch the motor shaft/drum gently
    with a cloth and `status` again: current rises. Note the numbers; stage 3 makes this easier.
 4. Repeat for B and C and check each sensor reads its own motor (0x40 = A, 0x41 = B, 0x44 = C).
+
+### Claw stage 3: calibration mode (picking the thresholds)
+
+Do this on the finished claw with tendons and elastics fitted, J4 at 5 V.
+
+1. `cal on`. The LEDs alternate and CSV lines scroll.
+2. **Free close:** open finger A by hand, then `move a close 50 800`, shorter or longer until
+   the finger just reaches fully curled. Note the summary's average (free-running closing
+   current) and how long a full close takes.
+3. **Closed on nothing:** `move a close 50 2000` so the finger curls fully and the motor keeps
+   pulling. The CSV shows the current climbing when the finger bottoms out; note the plateau.
+4. **Gripping objects:** put a soft object (sponge) and a hard one (wooden block) in the claw,
+   `move all close 50 2000`, note the plateau per finger.
+5. **Open:** `move a open 50 <ms>` starting from closed. Find the time that fully unwinds the
+   tendon without winding it back the other way. Watch the current: it usually drops once the
+   tendon goes slack (then only the motor's no-load current flows). That drop is what
+   `OPEN_MODE_CURRENT_BELOW` detects.
+6. Repeat at the effort (PWM %) you intend to use. `cal off`.
+7. Record: free close current, grip plateau (soft, hard, nothing), full-close time, open time,
+   slack current. These go into the stage 4 settings (see the table under Grip logic).

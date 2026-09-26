@@ -26,6 +26,8 @@ class ClawController {
     sampleCurrents(now);
     handleCommands(now);
     for (Finger& f : _fingers) f.update(now);
+    trackMoveStats(now);
+    streamCalibration(now);
     publishStatus();
     updateLeds(now);
   }
@@ -43,6 +45,20 @@ class ClawController {
   float _peakmA[claw::kNumFingers] = {};     // since the last command for that finger
   uint32_t _lastSensorRetryMs = 0;
   bool _sensorWasOk[claw::kNumFingers] = {};
+  bool _calibration = false;
+  uint32_t _lastCalSampleMs = 0;
+
+  // Per-finger statistics of the current manual move, reported when it ends.
+  struct MoveStats {
+    bool active = false;
+    int dir = 0;
+    uint8_t pct = 0;
+    uint32_t startMs = 0;
+    float sum = 0;
+    uint32_t count = 0;
+    float peak = 0;
+  } _moveStats[claw::kNumFingers];
+
   StatusLeds _leds;
   uint8_t _lastCommandSeq = 0;
   claw::CommandResult _lastCommandResult = claw::CommandResult::None;
@@ -85,6 +101,38 @@ class ClawController {
     if (anyFailed && now - _lastSensorRetryMs >= SENSOR_RETRY_MS) initSensors(now, false);
   }
 
+  void trackMoveStats(uint32_t now) {
+    for (int i = 0; i < claw::kNumFingers; i++) {
+      MoveStats& m = _moveStats[i];
+      if (!m.active) continue;
+      if (_fingers[i].state() == claw::FingerState::Moving) {
+        if (now - m.startMs >= INRUSH_BLANK_MS) {
+          m.sum += _currentmA[i];
+          m.count++;
+        }
+        m.peak = max(m.peak, _currentmA[i]);
+        continue;
+      }
+      m.active = false;
+      shared::logEvent("%c %s %u%% %lu ms: avg %.0f mA after inrush, peak %.0f mA (incl. inrush)",
+                       'A' + i, m.dir > 0 ? "close" : "open", m.pct, (unsigned long)(now - m.startMs),
+                       m.count ? m.sum / m.count : 0.0f, m.peak);
+    }
+  }
+
+  void streamCalibration(uint32_t now) {
+    if (!_calibration || now - _lastCalSampleMs < 1000 / CAL_STREAM_HZ) return;
+    _lastCalSampleMs = now;
+    CalibrationSample c;
+    c.ms = now;
+    for (int i = 0; i < claw::kNumFingers; i++) {
+      c.rawmA[i] = _sensors[i].currentmA();
+      c.filteredmA[i] = _currentmA[i];
+      c.state[i] = _fingers[i].state();
+    }
+    xQueueSend(shared::calibrationQueue, &c, 0);  // drop samples rather than block
+  }
+
   void resetPeaks(uint8_t mask) {
     for (int i = 0; i < claw::kNumFingers; i++)
       if (mask & (1 << i)) _peakmA[i] = 0;
@@ -109,8 +157,15 @@ class ClawController {
         if (cmd.arg == 0 || cmd.effortPct == 0 || cmd.durationMs == 0)
           return claw::CommandResult::BadArgument;
         resetPeaks(mask);
-        for (int i = 0; i < claw::kNumFingers; i++)
-          if (mask & (1 << i)) _fingers[i].move(cmd.arg, cmd.effortPct / 100.0f, cmd.durationMs, now);
+        for (int i = 0; i < claw::kNumFingers; i++) {
+          if (!(mask & (1 << i))) continue;
+          _fingers[i].move(cmd.arg, cmd.effortPct / 100.0f, cmd.durationMs, now);
+          _moveStats[i] = MoveStats();
+          _moveStats[i].active = _fingers[i].state() == claw::FingerState::Moving;
+          _moveStats[i].dir = cmd.arg;
+          _moveStats[i].pct = cmd.effortPct;
+          _moveStats[i].startMs = now;
+        }
         shared::logEvent("move mask %d %s %d%% for %d ms", mask, cmd.arg > 0 ? "close" : "open",
                          cmd.effortPct, cmd.durationMs);
         return claw::CommandResult::Accepted;
@@ -119,6 +174,11 @@ class ClawController {
         for (int i = 0; i < claw::kNumFingers; i++)
           if (mask & (1 << i)) _fingers[i].stop(now);
         shared::logEvent("stop");
+        return claw::CommandResult::Accepted;
+
+      case claw::Command::SetCalibration:
+        _calibration = cmd.arg != 0;
+        shared::logEvent("calibration mode %s", _calibration ? "ON" : "off");
         return claw::CommandResult::Accepted;
 
       default:
@@ -137,6 +197,7 @@ class ClawController {
         s.fingerFault[i] = claw::FingerFault::NoSensor;
       }
     }
+    if (_calibration) s.flags |= claw::kFlagCalibration;
     s.state = summaryState(s);
     s.lastCommandSeq = _lastCommandSeq;
     s.lastCommandResult = _lastCommandResult;
@@ -154,6 +215,7 @@ class ClawController {
     using P = StatusLeds::Pattern;
     P green = s.state == claw::ClawState::Moving ? P::FastBlink : P::On;
     P red = (s.flags & claw::kFlagSensorFault) ? P::SlowBlink : P::Off;
+    if (s.flags & claw::kFlagCalibration) green = red = P::Alternate;
     _leds.set(green, red);
     _leds.update(now);
   }

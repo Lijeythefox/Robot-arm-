@@ -37,6 +37,13 @@ struct ClawStatus {
   claw::CommandResult lastCommandResult = claw::CommandResult::None;
 };
 
+struct CalibrationSample {
+  uint32_t ms;
+  float rawmA[claw::kNumFingers];       // signed, unfiltered
+  float filteredmA[claw::kNumFingers];  // |current|, filtered (what the grip logic uses)
+  claw::FingerState state[claw::kNumFingers];
+};
+
 struct EventText {
   char text[96];
 };
@@ -45,6 +52,7 @@ namespace shared {
 
 inline QueueHandle_t commandQueue = nullptr;
 inline QueueHandle_t eventQueue = nullptr;
+inline QueueHandle_t calibrationQueue = nullptr;
 inline portMUX_TYPE statusMux = portMUX_INITIALIZER_UNLOCKED;
 inline ClawStatus status;
 inline volatile bool wifiConnected = false;
@@ -53,6 +61,7 @@ inline volatile int8_t rssi = 0;
 inline void init() {
   commandQueue = xQueueCreate(16, sizeof(ClawCommand));
   eventQueue = xQueueCreate(24, sizeof(EventText));
+  calibrationQueue = xQueueCreate(32, sizeof(CalibrationSample));
 }
 
 inline bool postCommand(const ClawCommand& cmd) { return xQueueSend(commandQueue, &cmd, 0) == pdTRUE; }

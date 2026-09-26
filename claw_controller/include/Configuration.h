@@ -68,6 +68,15 @@
 // A missing / failed sensor is re-initialised this often.
 #define SENSOR_RETRY_MS 1000
 
+// Motor start-up (inrush) current is ignored for this long after a finger starts moving.
+#define INRUSH_BLANK_MS 150
+
+// ============================================================================================
+// Calibration mode (serial "cal on"): streams CSV lines with the live current of every finger
+// at CAL_STREAM_HZ, and prints a summary (average after inrush, peak) after every manual move.
+// ============================================================================================
+#define CAL_STREAM_HZ 50
+
 // ============================================================================================
 // Status LEDs (active high through 220R). GPIO25/26 are strapping pins; fine as outputs.
 // ============================================================================================

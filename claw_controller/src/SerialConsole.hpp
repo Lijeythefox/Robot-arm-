@@ -15,6 +15,15 @@ class SerialConsole {
     EventText ev;
     while (xQueueReceive(shared::eventQueue, &ev, 0) == pdTRUE) Serial.printf("[claw] %s\n", ev.text);
 
+    CalibrationSample c;
+    while (xQueueReceive(shared::calibrationQueue, &c, 0) == pdTRUE) {
+      Serial.printf("cal,%lu", (unsigned long)c.ms);
+      for (int i = 0; i < claw::kNumFingers; i++) Serial.printf(",%.1f", c.rawmA[i]);
+      for (int i = 0; i < claw::kNumFingers; i++) Serial.printf(",%.1f", c.filteredmA[i]);
+      for (int i = 0; i < claw::kNumFingers; i++) Serial.printf(",%s", fingerStateName(c.state[i]));
+      Serial.println();
+    }
+
     while (Serial.available()) {
       char c = Serial.read();
       if (c == '\r') continue;
@@ -35,6 +44,7 @@ class SerialConsole {
         "  i2c                                     scan the I2C bus\n"
         "  move <finger> <close|open> <pct> <ms>   timed move at <pct>% PWM (max 5 s)\n"
         "  stop [finger]                           brake\n"
+        "  cal on|off                              stream live currents as CSV\n"
         "  help");
   }
 
@@ -103,6 +113,12 @@ class SerialConsole {
       c.durationMs = constrain(atoi(argv[4]), 0, MAX_MANUAL_MOVE_MS);
       if (!c.fingerMask || !c.arg) Serial.println("usage: move <a|b|c|all> <close|open> <pct> <ms>");
       else send(c);
+    } else if (cmd == "cal" && argc == 2) {
+      c.type = claw::Command::SetCalibration;
+      c.arg = String(argv[1]) == "on" ? 1 : 0;
+      if (c.arg)
+        Serial.println("cal,ms,A_raw_mA,B_raw_mA,C_raw_mA,A_mA,B_mA,C_mA,A_state,B_state,C_state");
+      send(c);
     } else if (cmd == "stop" || cmd == "s") {
       c.type = claw::Command::Stop;
       c.fingerMask = argc > 1 ? parseFinger(argv[1]) : 0;
