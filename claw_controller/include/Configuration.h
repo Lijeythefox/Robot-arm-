@@ -72,6 +72,53 @@
 #define INRUSH_BLANK_MS 150
 
 // ============================================================================================
+// Grip logic (all TBD: pick the numbers with calibration mode, see README).
+// Currents are the filtered magnitude of the motor current.
+// ============================================================================================
+#define CLOSE_EFFORT_PCT 60           // PWM while closing
+#define FORCE_CLOSE_EFFORT_PCT 90     // PWM for "close to target current", so the target is reachable
+#define OPEN_EFFORT_PCT 60            // PWM while opening
+
+// Closing -> Gripped when the current stays above the grip threshold for GRIP_CONFIRM_MS.
+#define FINGER_A_GRIP_THRESHOLD_MA 300
+#define FINGER_B_GRIP_THRESHOLD_MA 300
+#define FINGER_C_GRIP_THRESHOLD_MA 300
+#define GRIP_CONFIRM_MS 20
+// Give up (fault) if the grip threshold is not reached within this time.
+#define CLOSE_TIMEOUT_MS 3000
+
+// Once gripped: keep pulling at HOLD_EFFORT_PCT (0 = hold with the brake instead). If
+// HOLD_MAX_MS > 0, switch from PWM to brake after that long to spare the motor.
+#define HOLD_EFFORT_PCT 25
+#define HOLD_MAX_MS 0
+
+// Hard limit: any driven finger above this for HARD_LIMIT_CONFIRM_MS is stopped with a fault.
+// Checked after the inrush time. Must be above the grip threshold, and HARD_LIMIT_CONFIRM_MS
+// longer than GRIP_CONFIRM_MS: closing onto a hard object can jump straight past both, and the
+// finger should then drop to hold power (gripped), not fault.
+#define FINGER_A_HARD_LIMIT_MA 900
+#define FINGER_B_HARD_LIMIT_MA 900
+#define FINGER_C_HARD_LIMIT_MA 900
+#define HARD_LIMIT_CONFIRM_MS 40
+
+// How opening ends (the elastic opens the finger once the tendon is unwound):
+//   OPEN_MODE_TIME           run for OPEN_TIME_MS
+//   OPEN_MODE_CURRENT_BELOW  stop when the current drops below OPEN_SLACK_BELOW_MA (tendon slack,
+//                            motor free-running) for OPEN_CONFIRM_MS, or after OPEN_TIME_MS
+//   OPEN_MODE_CURRENT_ABOVE  stop when the current rises above OPEN_STOP_ABOVE_MA (e.g. a hard
+//                            stop at the open end) for OPEN_CONFIRM_MS, or after OPEN_TIME_MS
+// Do not let the drum keep unwinding: past slack it winds the tendon the other way and closes
+// the finger again, so keep OPEN_TIME_MS close to the measured unwind time.
+#define OPEN_MODE_TIME 0
+#define OPEN_MODE_CURRENT_BELOW 1
+#define OPEN_MODE_CURRENT_ABOVE 2
+#define OPEN_MODE OPEN_MODE_TIME
+#define OPEN_TIME_MS 1200
+#define OPEN_SLACK_BELOW_MA 60
+#define OPEN_STOP_ABOVE_MA 400
+#define OPEN_CONFIRM_MS 50
+
+// ============================================================================================
 // Calibration mode (serial "cal on"): streams CSV lines with the live current of every finger
 // at CAL_STREAM_HZ, and prints a summary (average after inrush, peak) after every manual move.
 // ============================================================================================

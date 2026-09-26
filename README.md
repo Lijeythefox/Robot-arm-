@@ -243,6 +243,61 @@ After every `move` a summary line follows, e.g.
 (150 ms) of each move is excluded from the average because the start-up current is always
 high. Both LEDs alternate while calibration mode is on. Copy the CSV into a spreadsheet to plot it.
 
+### Grip logic
+
+Each finger is a state machine driven by time and filtered motor current:
+
+- **close**: drive at `CLOSE_EFFORT_PCT`. After the `INRUSH_BLANK_MS` start-up, once the current
+  stays above `FINGER_x_GRIP_THRESHOLD_MA` for `GRIP_CONFIRM_MS` the finger is **gripped**: it
+  drops to `HOLD_EFFORT_PCT` (or brakes if that is 0; `HOLD_MAX_MS` switches a long hold to the
+  brake). No grip within `CLOSE_TIMEOUT_MS` = fault (timeout).
+- **close to force** (`force <mA>`): the same, with the grip threshold = the target current
+  (capped at 90% of the hard limit), driven at `FORCE_CLOSE_EFFORT_PCT` so the target is
+  reachable. Motor current is roughly proportional to tendon force.
+- **open**: reverse at `OPEN_EFFORT_PCT`, ending according to `OPEN_MODE`:
+  `OPEN_MODE_TIME` (run `OPEN_TIME_MS`), `OPEN_MODE_CURRENT_BELOW` (current below
+  `OPEN_SLACK_BELOW_MA` = tendon slack) or `OPEN_MODE_CURRENT_ABOVE` (current above
+  `OPEN_STOP_ABOVE_MA` = hit a stop). The current modes still end at `OPEN_TIME_MS` at the latest.
+  Then the motor coasts and the elastic opens the finger.
+- **hard limit**: any driven finger (closing, holding, opening, manual) above
+  `FINGER_x_HARD_LIMIT_MA` for `HARD_LIMIT_CONFIRM_MS` is braked and reports an overcurrent
+  fault. `HARD_LIMIT_CONFIRM_MS` must be longer than `GRIP_CONFIRM_MS` (checked at compile
+  time): closing onto something hard can jump past both thresholds at once, and the finger
+  should grip and drop to hold power rather than fault.
+- A motor is never left at full power in stall: it is either gripped (hold power), faulted
+  (braked), or timed out.
+- Faults brake the motor. Any new command for that finger clears its fault, so the claw can
+  always be opened again; `reset` clears faults without moving.
+- Closing on nothing also ends as "gripped" when the finger curls fully and stalls; current
+  alone cannot tell those apart. The time to grip (in the log) shows which it was.
+- Changing direction always brakes for `DIRECTION_CHANGE_BRAKE_MS` first, and every start ramps
+  up over `MOTOR_RAMP_MS`.
+
+| Setting | Default (TBD) | Pick it from calibration (stage 3) |
+|---|---|---|
+| `FINGER_x_GRIP_THRESHOLD_MA` | 300 | between the free-closing current and the soft-object plateau |
+| `FINGER_x_HARD_LIMIT_MA` | 900 | above the hard-object plateau, below the stall current / TB6612 1.2 A |
+| `CLOSE_EFFORT_PCT` / `HOLD_EFFORT_PCT` | 60 / 25 | enough to close reliably / to hold without slipping |
+| `CLOSE_TIMEOUT_MS` | 3000 | ~1.5x the full-close time |
+| `OPEN_MODE`, `OPEN_TIME_MS` | TIME, 1200 | the measured unwind time; current mode if the slack drop is clear |
+| `INRUSH_BLANK_MS` | 150 | longer than the start-up spike in the CSV |
+
+### LEDs
+
+| Green | Meaning |
+|---|---|
+| solid | ready (idle / open) |
+| fast blink (5 Hz) | a finger is closing, opening or moving |
+| double blink | gripping |
+| slow blink (1 Hz) | WiFi not connected (serial still works) |
+
+| Red | Meaning |
+|---|---|
+| solid | at least one finger faulted (overcurrent / timeout / emergency stop) |
+| slow blink | an INA219 is missing: its finger is locked out |
+
+Both alternating: calibration mode.
+
 ### Configuration
 
 `claw_controller/include/Configuration.h`. Per finger: `FINGER_x_INVERT` (which direction closes,
@@ -378,3 +433,21 @@ Do this on the finished claw with tendons and elastics fitted, J4 at 5 V.
 6. Repeat at the effort (PWM %) you intend to use. `cal off`.
 7. Record: free close current, grip plateau (soft, hard, nothing), full-close time, open time,
    slack current. These go into the stage 4 settings (see the table under Grip logic).
+
+### Claw stage 4: grip logic
+
+Enter the stage 3 numbers in `Configuration.h` first. J4 at 5 V, claw on the bench.
+
+1. `close` with nothing in the claw: all fingers curl; the log prints `A gripped at ... mA after
+   ... ms` for each, green double-blinks. `status` shows `GRIPPED` and currents at hold level.
+2. `open`: fingers unwind and open; state `open`, green solid. If a finger stops short or starts
+   closing again, adjust `OPEN_TIME_MS` (or switch `OPEN_MODE`).
+3. Soft object (sponge): `close`. Each finger must stop on the object and hold without crushing
+   it. Repeat with a hard object: grip, no overcurrent fault.
+4. `force 200` vs `force 500` on the sponge: visibly different squeeze.
+5. Timeout: set `CLOSE_TIMEOUT_MS` to 300 temporarily, `close`: every finger faults with
+   `close TIMEOUT`, red LED solid, motors braked. `open` clears the fault and opens.
+6. Overcurrent: `move a close 100 3000` with finger A blocked by hand (be gentle): within ~0.2 s
+   of the stall `A OVERCURRENT` and the motor stops. Motor and TB6612 must not get hot.
+7. Hold: `close` on an object and leave it for a minute; feel the motors (warm is ok, hot is not;
+   lower `HOLD_EFFORT_PCT` or set `HOLD_MAX_MS`).

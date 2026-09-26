@@ -42,6 +42,10 @@ class SerialConsole {
         "Commands (finger = a, b, c or all):\n"
         "  status                                  finger states and currents\n"
         "  i2c                                     scan the I2C bus\n"
+        "  open [finger]                           open (unwind until OPEN_MODE says open)\n"
+        "  close [finger]                          close until gripped, then hold\n"
+        "  force <mA> [finger]                     close until the current reaches <mA>\n"
+        "  reset [finger]                          clear faults\n"
         "  move <finger> <close|open> <pct> <ms>   timed move at <pct>% PWM (max 5 s)\n"
         "  stop [finger]                           brake\n"
         "  cal on|off                              stream live currents as CSV\n"
@@ -63,6 +67,30 @@ class SerialConsole {
       case claw::FingerState::Moving: return "moving";
       case claw::FingerState::Fault: return "FAULT";
       case claw::FingerState::Disabled: return "disabled";
+    }
+    return "?";
+  }
+
+  static const char* clawStateName(claw::ClawState s) {
+    switch (s) {
+      case claw::ClawState::Idle: return "idle";
+      case claw::ClawState::Open: return "open";
+      case claw::ClawState::Opening: return "opening";
+      case claw::ClawState::Closing: return "closing";
+      case claw::ClawState::Gripped: return "GRIPPED";
+      case claw::ClawState::Moving: return "moving";
+      case claw::ClawState::Fault: return "FAULT";
+    }
+    return "?";
+  }
+
+  static const char* faultName(claw::FingerFault f) {
+    switch (f) {
+      case claw::FingerFault::None: return "";
+      case claw::FingerFault::OverCurrent: return "fault: overcurrent";
+      case claw::FingerFault::Timeout: return "fault: close timeout";
+      case claw::FingerFault::NoSensor: return "fault: NO SENSOR";
+      case claw::FingerFault::EStop: return "fault: emergency stop";
     }
     return "?";
   }
@@ -119,6 +147,16 @@ class SerialConsole {
       if (c.arg)
         Serial.println("cal,ms,A_raw_mA,B_raw_mA,C_raw_mA,A_mA,B_mA,C_mA,A_state,B_state,C_state");
       send(c);
+    } else if (cmd == "open" || cmd == "close" || cmd == "reset") {
+      c.type = cmd == "open" ? claw::Command::Open : cmd == "close" ? claw::Command::Close
+                                                                    : claw::Command::ResetFaults;
+      c.fingerMask = argc > 1 ? parseFinger(argv[1]) : 0;
+      send(c);
+    } else if (cmd == "force" && argc >= 2) {
+      c.type = claw::Command::CloseToForce;
+      c.targetCurrentmA = constrain(atoi(argv[1]), 0, 5000);
+      c.fingerMask = argc > 2 ? parseFinger(argv[2]) : 0;
+      send(c);
     } else if (cmd == "stop" || cmd == "s") {
       c.type = claw::Command::Stop;
       c.fingerMask = argc > 1 ? parseFinger(argv[1]) : 0;
@@ -130,11 +168,11 @@ class SerialConsole {
 
   static void printStatus() {
     ClawStatus s = shared::readStatus();
-    Serial.printf("WiFi %s\n", shared::wifiConnected ? "connected" : "not connected");
+    Serial.printf("claw %s, gripperState %d, WiFi %s\n", clawStateName(s.state), s.gripperState,
+                  shared::wifiConnected ? "connected" : "not connected");
     for (int i = 0; i < claw::kNumFingers; i++)
-      Serial.printf("  %c: %-8s %7.1f mA (peak %7.1f)%s\n", 'A' + i, fingerStateName(s.fingerState[i]),
-                    s.currentmA[i], s.peakmA[i],
-                    s.fingerFault[i] == claw::FingerFault::NoSensor ? "  NO SENSOR" : "");
+      Serial.printf("  %c: %-8s %7.1f mA (peak %7.1f)  %s\n", 'A' + i, fingerStateName(s.fingerState[i]),
+                    s.currentmA[i], s.peakmA[i], faultName(s.fingerFault[i]));
   }
 };
 

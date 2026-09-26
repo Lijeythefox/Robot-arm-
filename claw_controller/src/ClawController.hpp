@@ -25,7 +25,7 @@ class ClawController {
   void tick(uint32_t now) {
     sampleCurrents(now);
     handleCommands(now);
-    for (Finger& f : _fingers) f.update(now);
+    for (int i = 0; i < claw::kNumFingers; i++) _fingers[i].update(now, _currentmA[i]);
     trackMoveStats(now);
     streamCalibration(now);
     publishStatus();
@@ -38,8 +38,16 @@ class ClawController {
       MotorChannel(B_IN1, B_IN2, B_PWM, FINGER_B_INVERT),
       MotorChannel(C_IN1, C_IN2, C_PWM, FINGER_C_INVERT),
   };
-  Finger _fingers[claw::kNumFingers] = {Finger('A', _motors[0]), Finger('B', _motors[1]),
-                                        Finger('C', _motors[2])};
+  static_assert(GRIP_CONFIRM_MS < HARD_LIMIT_CONFIRM_MS, "a closing finger must be able to grip before the hard limit trips");
+  static_assert(FINGER_A_GRIP_THRESHOLD_MA < FINGER_A_HARD_LIMIT_MA, "A: grip threshold must be below the hard limit");
+  static_assert(FINGER_B_GRIP_THRESHOLD_MA < FINGER_B_HARD_LIMIT_MA, "B: grip threshold must be below the hard limit");
+  static_assert(FINGER_C_GRIP_THRESHOLD_MA < FINGER_C_HARD_LIMIT_MA, "C: grip threshold must be below the hard limit");
+  Finger _fingers[claw::kNumFingers] = {
+      Finger('A', _motors[0], {FINGER_A_GRIP_THRESHOLD_MA, FINGER_A_HARD_LIMIT_MA}),
+      Finger('B', _motors[1], {FINGER_B_GRIP_THRESHOLD_MA, FINGER_B_HARD_LIMIT_MA}),
+      Finger('C', _motors[2], {FINGER_C_GRIP_THRESHOLD_MA, FINGER_C_HARD_LIMIT_MA}),
+  };
+  bool _gripperState = false;  // legacy: last open (0) / close (1) command
   Ina219 _sensors[claw::kNumFingers] = {Ina219(INA_ADDR_A), Ina219(INA_ADDR_B), Ina219(INA_ADDR_C)};
   float _currentmA[claw::kNumFingers] = {};  // filtered |current|
   float _peakmA[claw::kNumFingers] = {};     // since the last command for that finger
@@ -170,6 +178,42 @@ class ClawController {
                          cmd.effortPct, cmd.durationMs);
         return claw::CommandResult::Accepted;
 
+      case claw::Command::Open:
+        resetPeaks(mask);
+        for (int i = 0; i < claw::kNumFingers; i++)
+          if (mask & (1 << i)) _fingers[i].open(now);
+        _gripperState = false;
+        shared::logEvent("open");
+        return claw::CommandResult::Accepted;
+
+      case claw::Command::Close:
+      case claw::Command::CloseToForce: {
+        bool force = cmd.type == claw::Command::CloseToForce;
+        if (force && cmd.targetCurrentmA == 0) return claw::CommandResult::BadArgument;
+        resetPeaks(mask);
+        for (int i = 0; i < claw::kNumFingers; i++) {
+          if (!(mask & (1 << i))) continue;
+          Finger& f = _fingers[i];
+          if (force) {
+            // Keep the target safely below the hard limit.
+            float target = min((float)cmd.targetCurrentmA, 0.9f * f.params().hardLimitmA);
+            f.close(now, target, FORCE_CLOSE_EFFORT_PCT);
+          } else {
+            f.close(now);
+          }
+        }
+        _gripperState = true;
+        if (force) shared::logEvent("close to %u mA", cmd.targetCurrentmA);
+        else shared::logEvent("close");
+        return claw::CommandResult::Accepted;
+      }
+
+      case claw::Command::ResetFaults:
+        for (int i = 0; i < claw::kNumFingers; i++)
+          if (mask & (1 << i)) _fingers[i].clearFault(now);
+        shared::logEvent("faults cleared");
+        return claw::CommandResult::Accepted;
+
       case claw::Command::Stop:
         for (int i = 0; i < claw::kNumFingers; i++)
           if (mask & (1 << i)) _fingers[i].stop(now);
@@ -192,11 +236,13 @@ class ClawController {
       s.fingerState[i] = _fingers[i].state();
       s.currentmA[i] = _currentmA[i];
       s.peakmA[i] = _peakmA[i];
+      s.fingerFault[i] = _fingers[i].fault();
       if (!_sensors[i].ok()) {
         s.flags |= claw::kFlagSensorFault;
         s.fingerFault[i] = claw::FingerFault::NoSensor;
       }
     }
+    s.gripperState = _gripperState;
     if (_calibration) s.flags |= claw::kFlagCalibration;
     s.state = summaryState(s);
     s.lastCommandSeq = _lastCommandSeq;
@@ -204,17 +250,38 @@ class ClawController {
     shared::writeStatus(s);
   }
 
+  // One state for the whole claw, most urgent first.
   static claw::ClawState summaryState(const ClawStatus& s) {
-    bool moving = false;
-    for (int i = 0; i < claw::kNumFingers; i++) moving |= s.fingerState[i] == claw::FingerState::Moving;
-    return moving ? claw::ClawState::Moving : claw::ClawState::Idle;
+    int count[9] = {};
+    int usable = 0;
+    for (int i = 0; i < claw::kNumFingers; i++) {
+      count[(int)s.fingerState[i]]++;
+      if (s.fingerState[i] != claw::FingerState::Disabled) usable++;
+    }
+    using F = claw::FingerState;
+    if (count[(int)F::Fault]) return claw::ClawState::Fault;
+    if (count[(int)F::Closing]) return claw::ClawState::Closing;
+    if (count[(int)F::Opening]) return claw::ClawState::Opening;
+    if (count[(int)F::Moving]) return claw::ClawState::Moving;
+    if (count[(int)F::Gripped]) return claw::ClawState::Gripped;
+    if (usable && count[(int)F::Open] == usable) return claw::ClawState::Open;
+    return claw::ClawState::Idle;
   }
 
   void updateLeds(uint32_t now) {
     ClawStatus s = shared::readStatus();
     using P = StatusLeds::Pattern;
-    P green = s.state == claw::ClawState::Moving ? P::FastBlink : P::On;
-    P red = (s.flags & claw::kFlagSensorFault) ? P::SlowBlink : P::Off;
+    P green = P::On;
+    switch (s.state) {
+      case claw::ClawState::Closing:
+      case claw::ClawState::Opening:
+      case claw::ClawState::Moving: green = P::FastBlink; break;
+      case claw::ClawState::Gripped: green = P::DoubleBlink; break;
+      default: break;
+    }
+    P red = P::Off;
+    if (s.state == claw::ClawState::Fault) red = P::On;
+    if (s.flags & claw::kFlagSensorFault) red = P::SlowBlink;
     if (s.flags & claw::kFlagCalibration) green = red = P::Alternate;
     _leds.set(green, red);
     _leds.update(now);
