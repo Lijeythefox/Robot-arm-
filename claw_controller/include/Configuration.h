@@ -45,6 +45,30 @@
 #define MAX_MANUAL_MOVE_MS 5000
 
 // ============================================================================================
+// Current sensing: 3x INA219 on I2C, 0.1 ohm shunt in each motor lead.
+// ============================================================================================
+#define I2C_SDA 8
+#define I2C_SCL 9
+#define I2C_FREQ_HZ 400000
+#define INA_ADDR_A 0x40  // U2, motor A
+#define INA_ADDR_B 0x41  // U3, motor B
+#define INA_ADDR_C 0x44  // U4, motor C
+#define SHUNT_OHMS 0.1
+// Highest current that must be measurable (N20 stall current at 5 V, TBD). Picks the INA219
+// range: 1.5 A -> 160 mV range (1.6 A full scale, ~0.05 mA resolution). Max 3.2 A.
+#define INA_MAX_CURRENT_A 1.5
+// Shunt ADC setting (INA219 SADC bits): 0x3 = 12 bit / 532 us, 0x9 = 2-sample avg / 1.06 ms,
+// 0xA = 4 samples / 2.13 ms. One fresh conversion per control period at 0x3.
+#define INA219_SHUNT_ADC 0x3
+// Exponential filter on |current| per control period: 1 = raw, smaller = smoother.
+// 0.3 at 500 Hz is a ~6 ms time constant.
+#define CURRENT_FILTER_ALPHA 0.3
+// Without its current sensor a finger has no stall protection, so it is locked out.
+#define ALLOW_MOTOR_WITHOUT_SENSOR false
+// A missing / failed sensor is re-initialised this often.
+#define SENSOR_RETRY_MS 1000
+
+// ============================================================================================
 // Status LEDs (active high through 220R). GPIO25/26 are strapping pins; fine as outputs.
 // ============================================================================================
 #define LED_RED 26

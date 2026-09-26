@@ -18,8 +18,20 @@ class Finger {
   char name() const { return _name; }
   claw::FingerState state() const { return _state; }
 
+  // Without a working current sensor there is no stall protection: lock the motor out.
+  void setSensorOk(bool ok, uint32_t now) {
+    if (ok == _sensorOk) return;
+    _sensorOk = ok;
+    if (ALLOW_MOTOR_WITHOUT_SENSOR) return;
+    if (!ok) coast(now, claw::FingerState::Disabled);
+    else if (_state == claw::FingerState::Disabled) enter(claw::FingerState::Idle, now);
+  }
+
+  bool canDrive() const { return _sensorOk || ALLOW_MOTOR_WITHOUT_SENSOR; }
+
   // Manual timed move: dir +1 close / -1 open, duty 0..1.
   void move(int dir, float duty, uint32_t durationMs, uint32_t now) {
+    if (!canDrive()) return;
     _moveDurationMs = min<uint32_t>(durationMs, MAX_MANUAL_MOVE_MS);
     startDrive(dir, duty, now);
     enter(claw::FingerState::Moving, now);
@@ -29,7 +41,7 @@ class Finger {
     _motor.brake();
     _driveDir = 0;
     _driving = false;
-    enter(claw::FingerState::Braked, now);
+    enter(canDrive() ? claw::FingerState::Braked : claw::FingerState::Disabled, now);
   }
 
   void update(uint32_t now) {
@@ -49,6 +61,7 @@ class Finger {
   claw::FingerState _state = claw::FingerState::Idle;
   uint32_t _stateSinceMs = 0;
   uint32_t _moveDurationMs = 0;
+  bool _sensorOk = true;
 
   // Requested drive, applied by serviceDrive(): brake first if reversing, then ramp the duty.
   int _driveDir = 0;

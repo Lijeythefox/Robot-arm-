@@ -2,6 +2,7 @@
 #define SERIAL_CONSOLE_HPP
 
 #include <Arduino.h>
+#include <Wire.h>
 
 #include "ClawShared.hpp"
 #include "Configuration.h"
@@ -31,6 +32,7 @@ class SerialConsole {
     Serial.println(
         "Commands (finger = a, b, c or all):\n"
         "  status                                  finger states and currents\n"
+        "  i2c                                     scan the I2C bus\n"
         "  move <finger> <close|open> <pct> <ms>   timed move at <pct>% PWM (max 5 s)\n"
         "  stop [finger]                           brake\n"
         "  help");
@@ -83,6 +85,15 @@ class SerialConsole {
       printHelp();
     } else if (cmd == "status") {
       printStatus();
+    } else if (cmd == "i2c") {
+      // Read-only probe. Runs at low priority while the control task also uses the bus;
+      // the Wire driver serialises transactions.
+      Serial.print("I2C devices:");
+      for (uint8_t a = 1; a < 127; a++) {
+        Wire.beginTransmission(a);
+        if (Wire.endTransmission() == 0) Serial.printf(" 0x%02X", a);
+      }
+      Serial.println(" (expect 0x40 0x41 0x44)");
     } else if (cmd == "move" && argc == 5) {
       c.type = claw::Command::MoveFinger;
       c.fingerMask = parseFinger(argv[1]);
@@ -105,7 +116,9 @@ class SerialConsole {
     ClawStatus s = shared::readStatus();
     Serial.printf("WiFi %s\n", shared::wifiConnected ? "connected" : "not connected");
     for (int i = 0; i < claw::kNumFingers; i++)
-      Serial.printf("  %c: %-8s\n", 'A' + i, fingerStateName(s.fingerState[i]));
+      Serial.printf("  %c: %-8s %7.1f mA (peak %7.1f)%s\n", 'A' + i, fingerStateName(s.fingerState[i]),
+                    s.currentmA[i], s.peakmA[i],
+                    s.fingerFault[i] == claw::FingerFault::NoSensor ? "  NO SENSOR" : "");
   }
 };
 

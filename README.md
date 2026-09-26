@@ -216,6 +216,20 @@ unwound. No encoders: grip and stall detection come from motor current.
   motors run from the PC's USB port. Keep motor tests to J4 power, and check whether the
   Waveshare board has a diode between its USB connector and VBUS before connecting both.
 
+### Current sensing
+
+Each INA219 is set up from `SHUNT_OHMS` (0.1) and `INA_MAX_CURRENT_A` (1.5 A, TBD: the N20 stall
+current at 5 V). The firmware picks the smallest shunt range that covers it (1.5 A x 0.1 ohm =
+150 mV, so the 160 mV range with 1.6 A full scale) and programs the calibration register so the
+current register reads in amps (~0.05 mA resolution). The shunt ADC runs continuously (12 bit,
+532 us); each control period (2 ms) reads all three sensors, so every sensor is sampled at
+500 Hz (1500 reads/s in total), well above the 200 Hz target.
+`CURRENT_FILTER_ALPHA` smooths the magnitude (0.3, a ~6 ms time constant).
+
+A sensor that does not answer at boot, or stops answering, **locks its finger out** (state
+`disabled`, red LED blinking slowly) because without it there is no stall protection. It is
+retried every second. `ALLOW_MOTOR_WITHOUT_SENSOR` overrides this for bench work.
+
 ### Configuration
 
 `claw_controller/include/Configuration.h`. Per finger: `FINGER_x_INVERT` (which direction closes,
@@ -318,3 +332,16 @@ Start with one axis, arm unloaded, 12 V, hand on the E-stop.
 4. `move a close 80 3000` then `stop a` after one second: the motor stops at once (brake).
 5. `move a close 60 2000` followed immediately by `move a open 60 2000`: there is a short brake
    (30 ms) before reversing, never a hard reversal.
+
+### Claw stage 2: INA219 readings
+
+1. **USB + J4 5 V, motors unplugged.** The log shows three lines `INA219 A (0x40) ok: range 1600
+   mA`, B (0x41), C (0x44). `i2c` lists 0x40 0x41 0x44. `status` shows all three at ~0 mA
+   (a few mA of offset is normal).
+2. Unsolder nothing: to test the lock-out, hold SDA of one sensor... simpler: temporarily set
+   `INA_ADDR_C 0x45`, flash, and check that the log says `INA219 C (0x45) NOT FOUND - finger C
+   locked out`, the red LED blinks slowly, and `move c close 50 500` does nothing. Restore it.
+3. **Motor A plugged in, no tendon.** `move a close 50 2000` and run `status` during the move:
+   free-running current (typically 50-150 mA for an N20). Pinch the motor shaft/drum gently
+   with a cloth and `status` again: current rises. Note the numbers; stage 3 makes this easier.
+4. Repeat for B and C and check each sensor reads its own motor (0x40 = A, 0x41 = B, 0x44 = C).
